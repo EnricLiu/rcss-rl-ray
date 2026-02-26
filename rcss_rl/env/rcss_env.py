@@ -44,7 +44,7 @@ _TURN_ANGLE = np.pi / 6.0
 # Velocity decay applied each step (simple friction model).
 _VELOCITY_DECAY = 0.4
 
-# Field half-width is derived from half-length for a standard 105×68 ratio.
+# Field half-width ratio (approximation of the standard 105×68 pitch).
 _FIELD_WIDTH_RATIO = 0.68
 
 

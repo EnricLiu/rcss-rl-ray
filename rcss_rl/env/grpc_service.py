@@ -28,6 +28,12 @@ this module::
         --python_out=rcss_rl/proto \\
         --grpc_python_out=rcss_rl/proto \\
         rcss_rl/proto/service.proto
+
+.. note::
+   The placeholder RPC handlers currently return *None* because the
+   generated proto stubs are not yet available.  Once stubs are
+   generated, each handler should return the appropriate proto message
+   (e.g. ``service_pb2.Empty()``).
 """
 
 from __future__ import annotations
