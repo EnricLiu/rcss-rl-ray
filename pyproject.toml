@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rcss-rl-ray"
+version = "0.1.0"
+description = "Multi-agent reinforcement learning for RoboCup Soccer Simulation using Ray/RLlib"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "ray[rllib]>=2.10.0",
+    "gymnasium>=1.0.0",
+    "numpy>=1.24.0",
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+
+[project.scripts]
+rcss-train = "rcss_rl.train:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rcss_rl*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
