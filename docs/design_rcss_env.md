@@ -134,14 +134,42 @@ class EnvConfig:
     # 左方参与训练的球员 uniform numbers
     right_agents: list[int] = field(default_factory=list)
     # 右方参与训练的球员 uniform numbers (通常为空)
-    left_bot_image: str = "helios-base:latest"   # 左方 bot 的 Docker 镜像
-    right_bot_image: str = "helios-base:latest"  # 右方 bot 的 Docker 镜像
+    left_bot_image: str = "HELIOS/helios-base"    # 左方 bot 的 Docker 镜像
+    right_bot_image: str = "HELIOS/helios-base"   # 右方 bot 的 Docker 镜像
+    agent_image: str = "Cyrus2D/SoccerSimulationProxy"  # agent sidecar 的镜像
+    agent_type: str = "ssp"                       # agent 类型标识 (如 "ssp")
 
-    # --- 新增：停止条件 ---
-    # time_up 控制 rcssserver 的模拟 cycle 上限，由 allocator 传给模拟器
-    # max_episode_steps 控制训练端的 episode 截断，可 <= time_up
+    # --- 新增：停止条件 (对应 template.json → stopping) ---
     time_up: int = 6000                      # rcssserver 模拟 cycle 上限
+    goal_limit_l: int = 0                    # 左方进球达到此数即停 (0=不限)
+
+    # --- 新增：裁判 (对应 template.json → referee) ---
+    referee_enable: bool = False             # 是否启用裁判模块
+
+    # --- 新增：初始状态 (对应 template.json → init_state) ---
+    ball_init_x: float | None = None         # 球的初始归一化 X 坐标 (0~1)
+    ball_init_y: float | None = None         # 球的初始归一化 Y 坐标 (0~1)
 ```
+
+> **与 template.json 的映射说明**
+>
+> allocator 期望的 `template.json` 结构来源于 [rcss_cluster/match_composer](https://github.com/EnricLiu/rcss_cluster/blob/sidecar/match_composer/sidecars/match_composer/docs/template.json)。
+> `EnvConfig` 中的字段与 template.json 的对应关系：
+>
+> | EnvConfig 字段 | template.json 路径 | 说明 |
+> |---|---|---|
+> | `time_up` | `stopping.time_up` | 模拟 cycle 上限 |
+> | `goal_limit_l` | `stopping.goal_l` | 左方进球数停止条件 |
+> | `referee_enable` | `referee.enable` | 是否启用裁判 |
+> | `ball_init_x/y` | `init_state.ball.x/y` | 球初始位置 |
+> | `grpc_advertise_host` | 各 agent player → `policy.grpc_host` | sidecar 回连地址 |
+> | `grpc_port` | 各 agent player → `policy.grpc_port` | sidecar 回连端口 |
+> | `agent_image` | 各 agent player → `policy.image` | SSP 镜像名 |
+> | `agent_type` | 各 agent player → `policy.agent` | agent 类型 (如 "ssp") |
+> | `left_bot_image` | 左方 bot player → `policy.image` | bot 镜像名 |
+> | `right_bot_image` | 右方 bot player → `policy.image` | bot 镜像名 |
+>
+> per-player 的 `init_state`（位置/体力）和 `blocklist`（禁用动作）在高级场景中由 `PlayerConfig` 单独控制，详见 [§6](#6-playerconfig-与-roomrequest-改进)。
 
 ### 4.2 RCSSEnv 改造
 
@@ -240,7 +268,7 @@ def _stop_grpc_server(self):
 ### 4.4 RoomRequest 构建
 
 `RoomRequest` 需要根据环境配置生成符合 `template.json` 格式的请求。
-由于所有训练 agent 共享同一个 gRPC 服务器，所有 `kind: "agent"` 的球员使用相同的 `grpc_host` 和 `grpc_port`：
+在 template.json 中，每个 `kind: "agent"` 球员的 `policy` 块**单独**携带 `grpc_host`/`grpc_port`、`agent` 类型和 `image` 字段。虽然所有训练 agent 指向同一个 gRPC 服务器，但这些字段需要写在每个 agent 球员的 policy 内部：
 
 ```python
 def _build_room_request(self) -> RoomRequest:
@@ -251,11 +279,15 @@ def _build_room_request(self) -> RoomRequest:
     # 左方队伍
     for unum in range(1, self._cfg.num_left + 1):
         if unum in self._cfg.left_agents:
-            # 训练 agent — 所有 agent 共享同一 gRPC 地址
+            # 训练 agent — 每个 agent 的 policy 中包含 gRPC 地址
             left_players.append(PlayerConfig(
                 unum=unum,
                 goalie=(unum == 1),
                 policy_kind="agent",
+                policy_agent=self._cfg.agent_type,
+                policy_image=self._cfg.agent_image,
+                grpc_host=self._cfg.grpc_advertise_host,
+                grpc_port=self._cfg.grpc_port,
             ))
         else:
             # Bot 球员
@@ -274,25 +306,32 @@ def _build_room_request(self) -> RoomRequest:
         ally_players=left_players,
         opponent_players=right_players,
         time_up=self._cfg.time_up,
-        # 所有训练 agent 共享同一 gRPC 地址和端口
-        grpc_host=self._cfg.grpc_advertise_host,
-        grpc_port=self._cfg.grpc_port,
+        goal_limit_l=self._cfg.goal_limit_l,
+        referee_enable=self._cfg.referee_enable,
+        ball_init_x=self._cfg.ball_init_x,
+        ball_init_y=self._cfg.ball_init_y,
     )
 ```
 
 ### 4.5 template.json 配置映射
 
-allocator 期望的 `template.json` 结构（推测）。注意所有训练 agent 指向同一个 gRPC 地址，sidecar 通过该地址连接到训练端的单一 gRPC 服务器：
+allocator 期望的 `template.json` 结构参考自 [rcss_cluster/match_composer](https://github.com/EnricLiu/rcss_cluster/blob/sidecar/match_composer/sidecars/match_composer/docs/template.json)。gRPC 连接信息（`grpc_host`/`grpc_port`）位于**每个 agent 球员的 `policy` 块内**，虽然所有训练 agent 实际指向同一个 gRPC 服务器。此外还包括 `referee`、`init_state`（球的初始位置）、per-player `init_state`（球员初始位置/体力）、`blocklist`（禁用特定动作）等字段：
 
 ```json
 {
   "api_version": 1,
-  "stopping": {
-    "time_up": 6000
+  "referee": {
+    "enable": false
   },
-  "grpc": {
-    "host": "10.0.0.5",
-    "port": 50051
+  "stopping": {
+    "time_up": 6000,
+    "goal_l": 0
+  },
+  "init_state": {
+    "ball": {
+      "x": 0.5,
+      "y": 0.5
+    }
   },
   "teams": {
     "allies": {
@@ -301,17 +340,33 @@ allocator 期望的 `template.json` 结构（推测）。注意所有训练 agen
         {
           "unum": 1,
           "goalie": true,
-          "policy": { "kind": "bot", "image": "helios-base:latest" }
+          "policy": { "kind": "bot", "image": "HELIOS/helios-base" },
+          "init_state": { "pos": { "x": 0.9, "y": 0.5 }, "stamina": 6000 },
+          "blocklist": { "dash": true, "catch": false }
         },
         {
           "unum": 2,
           "goalie": false,
-          "policy": { "kind": "agent" }
+          "policy": {
+            "kind": "agent",
+            "agent": "ssp",
+            "image": "Cyrus2D/SoccerSimulationProxy",
+            "grpc_host": "127.0.0.1",
+            "grpc_port": 6657
+          },
+          "init_state": { "pos": { "x": 0.7, "y": 0.5 } }
         },
         {
           "unum": 3,
           "goalie": false,
-          "policy": { "kind": "agent" }
+          "policy": {
+            "kind": "agent",
+            "agent": "ssp",
+            "image": "Cyrus2D/SoccerSimulationProxy",
+            "grpc_host": "127.0.0.1",
+            "grpc_port": 6657
+          },
+          "init_state": { "pos": { "x": 0.5, "y": 0.5 } }
         }
       ]
     },
@@ -321,7 +376,15 @@ allocator 期望的 `template.json` 结构（推测）。注意所有训练 agen
         {
           "unum": 1,
           "goalie": true,
-          "policy": { "kind": "bot", "image": "helios-base:latest" }
+          "policy": { "kind": "bot", "image": "HELIOS/helios-base" },
+          "init_state": { "pos": { "x": 0.9, "y": 0.5 }, "stamina": 6000 },
+          "blocklist": { "dash": true, "catch": false }
+        },
+        {
+          "unum": 2,
+          "goalie": false,
+          "policy": { "kind": "bot", "image": "HELIOS/helios-base" },
+          "init_state": { "pos": { "x": 0.7, "y": 0.5 } }
         }
       ]
     }
@@ -329,7 +392,14 @@ allocator 期望的 `template.json` 结构（推测）。注意所有训练 agen
 }
 ```
 
-**关键点**：`grpc` 配置位于顶层，所有 `kind: "agent"` 的球员共享该地址。`GameServicer` 在收到 `GetPlayerActions` 请求时，通过 `request.world_model.self.id`（unum）识别是哪位球员的请求，从而分发到对应的状态/动作缓冲区。
+**关键点**：
+
+- `grpc_host` 和 `grpc_port` 位于**每个 agent 球员的 `policy` 内**（而非顶层），这是 template.json 的实际格式
+- 所有训练 agent 的 `grpc_host`/`grpc_port` 可以相同——它们都指向 `RCSSEnv` 启动的同一个 gRPC 服务器
+- `GameServicer` 在收到 `GetPlayerActions` 请求时，通过 `request.world_model.self.id`（unum）识别是哪位球员的请求
+- 每个 agent player 的 `policy.agent` 字段指定代理类型（如 `"ssp"` 表示 SoccerSimulationProxy）
+- 每个 agent player 的 `policy.image` 字段指定 sidecar 的 Docker 镜像
+- `init_state` 和 `blocklist` 是可选的 per-player 覆盖配置
 
 ### 4.6 Agent ID 映射
 
@@ -613,40 +683,78 @@ class GameServicer:
 
 ## 6. PlayerConfig 与 RoomRequest 改进
 
-### 6.1 PlayerConfig 不需要 gRPC 配置
+### 6.1 PlayerConfig 包含完整 template.json 字段
 
-由于所有训练 agent 共享同一个 gRPC 服务器，`PlayerConfig` 不需要携带 per-player 的 gRPC 地址。gRPC 配置在 `RoomRequest` 级别统一指定：
+`PlayerConfig` 需要能表达 template.json 中每个球员的完整配置，包括 per-player 的 gRPC 地址（用于 agent）、初始状态和动作黑名单：
 
 ```python
+@dataclass
+class PlayerInitState:
+    """per-player 初始状态覆盖"""
+    pos_x: float | None = None     # 归一化 X 坐标 (0~1)
+    pos_y: float | None = None     # 归一化 Y 坐标 (0~1)
+    stamina: float | None = None   # 初始体力
+
 @dataclass
 class PlayerConfig:
     unum: int = 1
     goalie: bool = False
-    policy_kind: str = "agent"      # "bot" | "agent"
-    policy_image: str | None = None  # Docker image for bot
+    policy_kind: str = "agent"        # "bot" | "agent"
+    policy_image: str | None = None   # Docker 镜像 (bot 和 agent 均使用)
+    policy_agent: str | None = None   # agent 类型 (如 "ssp"), 仅 kind="agent"
+    grpc_host: str | None = None      # gRPC 回连地址, 仅 kind="agent"
+    grpc_port: int | None = None      # gRPC 回连端口, 仅 kind="agent"
+    init_state: PlayerInitState | None = None  # 可选初始状态
+    blocklist: dict[str, bool] | None = None   # 可选动作黑名单
 ```
 
-### 6.2 RoomRequest.to_dict() 在顶层包含 gRPC 地址
+> **说明**：gRPC 配置在**每个 agent 球员的 policy 内**分别指定，这与 template.json 的格式一致。
+> 虽然通常所有 agent 指向同一个 gRPC 服务器（地址和端口相同），但结构上它们是 per-player 的。
+
+### 6.2 RoomRequest.to_dict() 输出完整 template.json
 
 ```python
+@dataclass
+class RoomRequest:
+    ally_name: str = "RLAgent"
+    opponent_name: str = "Bot"
+    ally_players: list[PlayerConfig] = field(default_factory=list)
+    opponent_players: list[PlayerConfig] = field(default_factory=list)
+    time_up: int = 6000
+    goal_limit_l: int = 0              # stopping.goal_l
+    referee_enable: bool = False       # referee.enable
+    ball_init_x: float | None = None   # init_state.ball.x
+    ball_init_y: float | None = None   # init_state.ball.y
+
 def to_dict(self) -> dict:
     def _player(p: PlayerConfig) -> dict:
         policy = {"kind": p.policy_kind}
-        if p.policy_kind == "bot" and p.policy_image:
+        if p.policy_image:
             policy["image"] = p.policy_image
-        return {
+        if p.policy_kind == "agent":
+            if p.policy_agent:
+                policy["agent"] = p.policy_agent
+            if p.grpc_host is not None:
+                policy["grpc_host"] = p.grpc_host
+            if p.grpc_port is not None:
+                policy["grpc_port"] = p.grpc_port
+        result = {
             "unum": p.unum,
             "goalie": p.goalie,
             "policy": policy,
         }
+        if p.init_state is not None:
+            init_dict = p.init_state.to_dict()
+            if init_dict:
+                result["init_state"] = init_dict
+        if p.blocklist:
+            result["blocklist"] = p.blocklist
+        return result
 
-    return {
+    result = {
         "api_version": 1,
-        "stopping": {"time_up": self.time_up},
-        "grpc": {
-            "host": self.grpc_host,
-            "port": self.grpc_port,
-        },
+        "referee": {"enable": self.referee_enable},
+        "stopping": {"time_up": self.time_up, "goal_l": self.goal_limit_l},
         "teams": {
             "allies": {
                 "name": self.ally_name,
@@ -658,6 +766,11 @@ def to_dict(self) -> dict:
             },
         },
     }
+    if self.ball_init_x is not None and self.ball_init_y is not None:
+        result["init_state"] = {
+            "ball": {"x": self.ball_init_x, "y": self.ball_init_y},
+        }
+    return result
 ```
 
 ## 7. 错误处理与鲁棒性

@@ -24,8 +24,41 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class PlayerInitState:
+    """Initial state overrides for a single player.
+
+    Matches the ``init_state`` block in *template.json*.
+
+    Attributes
+    ----------
+    pos_x : float | None
+        Normalised X position (0–1 range, ``None`` = default).
+    pos_y : float | None
+        Normalised Y position (0–1 range, ``None`` = default).
+    stamina : float | None
+        Starting stamina (``None`` = default).
+    """
+
+    pos_x: float | None = None
+    pos_y: float | None = None
+    stamina: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialise; omit *None* values."""
+        d: dict[str, Any] = {}
+        if self.pos_x is not None and self.pos_y is not None:
+            d["pos"] = {"x": self.pos_x, "y": self.pos_y}
+        if self.stamina is not None:
+            d["stamina"] = self.stamina
+        return d
+
+
+@dataclass
 class PlayerConfig:
     """Configuration for a single player in a match.
+
+    Mirrors the per-player block in the *template.json* accepted by the
+    rcss_cluster match-composer sidecar.
 
     Attributes
     ----------
@@ -35,16 +68,37 @@ class PlayerConfig:
         Whether this player is a goalie.
     policy_kind : str
         ``"bot"`` for a scripted agent or ``"agent"`` for an RL training
-        agent.
+        agent (SoccerSimulationProxy).
     policy_image : str | None
-        Docker image for bot players (e.g. ``"HELIOS/helios-base"``).
-        Ignored when *policy_kind* is ``"agent"``.
+        Docker image name.  For ``"bot"`` this is the bot image
+        (e.g. ``"HELIOS/helios-base"``); for ``"agent"`` this is the
+        SoccerSimulationProxy image
+        (e.g. ``"Cyrus2D/SoccerSimulationProxy"``).
+    policy_agent : str | None
+        Agent type identifier, used when *policy_kind* is ``"agent"``
+        (e.g. ``"ssp"``).
+    grpc_host : str | None
+        gRPC host address that the sidecar will connect to.
+        Only used when *policy_kind* is ``"agent"``.
+    grpc_port : int | None
+        gRPC port that the sidecar will connect to.
+        Only used when *policy_kind* is ``"agent"``.
+    init_state : PlayerInitState | None
+        Optional initial state overrides (position, stamina).
+    blocklist : dict[str, bool] | None
+        Optional map of action names to blocked status
+        (e.g. ``{"dash": True, "catch": False}``).
     """
 
     unum: int = 1
     goalie: bool = False
     policy_kind: str = "agent"
     policy_image: str | None = None
+    policy_agent: str | None = None
+    grpc_host: str | None = None
+    grpc_port: int | None = None
+    init_state: PlayerInitState | None = None
+    blocklist: dict[str, bool] | None = None
 
 
 @dataclass
@@ -66,11 +120,14 @@ class RoomRequest:
         Player specifications for the opponent team.
     time_up : int
         Simulation stop time (in server cycles).
-    grpc_host : str
-        Host address of the training-side gRPC server (reachable by the
-        sidecar).
-    grpc_port : int
-        Port of the training-side gRPC server.
+    goal_limit_l : int
+        Stop after the left team scores this many goals (0 = disabled).
+    referee_enable : bool
+        Whether to enable the referee module.
+    ball_init_x : float | None
+        Normalised initial X position of the ball (``None`` = default).
+    ball_init_y : float | None
+        Normalised initial Y position of the ball (``None`` = default).
     """
 
     ally_name: str = "RLAgent"
@@ -78,24 +135,47 @@ class RoomRequest:
     ally_players: list[PlayerConfig] = field(default_factory=list)
     opponent_players: list[PlayerConfig] = field(default_factory=list)
     time_up: int = 6000
-    grpc_host: str = "localhost"
-    grpc_port: int = 50051
+    goal_limit_l: int = 0
+    referee_enable: bool = False
+    ball_init_x: float | None = None
+    ball_init_y: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to the JSON structure expected by the allocator."""
+        """Serialise to the JSON structure expected by the allocator.
+
+        The output conforms to the ``template.json`` format of the
+        rcss_cluster match-composer sidecar, including per-player
+        ``init_state``, ``blocklist``, and agent policy gRPC fields.
+        """
+
         def _player(p: PlayerConfig) -> dict[str, Any]:
             policy: dict[str, Any] = {"kind": p.policy_kind}
             if p.policy_image:
                 policy["image"] = p.policy_image
-            return {
+            if p.policy_kind == "agent":
+                if p.policy_agent:
+                    policy["agent"] = p.policy_agent
+                if p.grpc_host is not None:
+                    policy["grpc_host"] = p.grpc_host
+                if p.grpc_port is not None:
+                    policy["grpc_port"] = p.grpc_port
+            result: dict[str, Any] = {
                 "unum": p.unum,
                 "goalie": p.goalie,
                 "policy": policy,
             }
+            if p.init_state is not None:
+                init_dict = p.init_state.to_dict()
+                if init_dict:
+                    result["init_state"] = init_dict
+            if p.blocklist:
+                result["blocklist"] = p.blocklist
+            return result
 
-        return {
+        result: dict[str, Any] = {
             "api_version": 1,
-            "stopping": {"time_up": self.time_up},
+            "referee": {"enable": self.referee_enable},
+            "stopping": {"time_up": self.time_up, "goal_l": self.goal_limit_l},
             "teams": {
                 "allies": {
                     "name": self.ally_name,
@@ -107,6 +187,11 @@ class RoomRequest:
                 },
             },
         }
+        if self.ball_init_x is not None and self.ball_init_y is not None:
+            result["init_state"] = {
+                "ball": {"x": self.ball_init_x, "y": self.ball_init_y},
+            }
+        return result
 
 
 class AllocatorClient:
