@@ -117,7 +117,7 @@ class EnvConfig:
     # --- 现有配置 ---
     num_left: int = 3           # 左方队伍总人数 (bot + agent)
     num_right: int = 3          # 右方队伍总人数 (bot + agent)
-    max_episode_steps: int = 6000
+    max_episode_steps: int = 6000  # 训练端的 episode 截断步数 (可与 time_up 不同)
     # ... 奖励参数等 ...
 
     # --- 新增：远程模式配置 ---
@@ -136,7 +136,9 @@ class EnvConfig:
     right_bot_image: str = "helios-base:latest"  # 右方 bot 的 Docker 镜像
 
     # --- 新增：停止条件 ---
-    time_up: int = 6000                      # 模拟器的最大cycle数
+    # time_up 控制 rcssserver 的模拟 cycle 上限，由 allocator 传给模拟器
+    # max_episode_steps 控制训练端的 episode 截断，可 <= time_up
+    time_up: int = 6000                      # rcssserver 模拟 cycle 上限
 ```
 
 ### 4.2 RCSSEnv 改造
@@ -274,6 +276,8 @@ def _build_room_request(self) -> RoomRequest:
         ally_players=left_players,
         opponent_players=right_players,
         time_up=self._cfg.time_up,
+        # 注：每个 agent 的 grpc_host/port 已在上方的 PlayerConfig 中
+        # 按 _agent_port_map 逐个设置，此处字段仅作为全局默认值
         grpc_host=self._cfg.grpc_advertise_host,
         grpc_port=self._cfg.grpc_base_port,
     )
@@ -410,7 +414,8 @@ action_space = spaces.Box(low=-1, high=1, shape=(3,))
 
 def _action_to_proto(self, action: np.ndarray) -> pb2.PlayerActions:
     actions = pb2.PlayerActions()
-    action_type = int(np.clip(action[0] * 3, 0, 4))
+    action_type = int(np.clip(np.round((action[0] + 1) / 2 * 4), 0, 4))
+    # Maps [-1,1] → [0,4] uniformly covering all 5 action types
 
     if action_type == 0:  # Dash
         actions.actions.append(pb2.PlayerAction(
@@ -641,12 +646,16 @@ Ray/RLlib 的 `num_env_runners` 和 `num_envs_per_runner` 会创建多个 `RCSSE
 - 独立的模拟房间
 
 ```python
+# 每个 (worker, vector_env) 组合需要 n_agents 个端口。
+# PORT_BLOCK_SIZE 定义每个 env 实例保留的端口数量（应 >= 最大训练 agent 数）。
+PORT_BLOCK_SIZE = 100  # 保留 100 个端口 per env 实例，允许最多 100 个训练 agent
+
 def __init__(self, config):
     # 使用 worker_index 和 vector_index 来避免端口冲突
     worker_index = config.get("worker_index", 0)
     vector_index = config.get("vector_index", 0)
     n_agents = len(self._training_agent_ids)
-    base_port = self._cfg.grpc_base_port + (worker_index * 100 + vector_index) * n_agents
+    base_port = self._cfg.grpc_base_port + (worker_index * PORT_BLOCK_SIZE + vector_index) * n_agents
 ```
 
 ### 8.2 Agent ID 策略映射
