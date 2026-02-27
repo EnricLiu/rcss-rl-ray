@@ -782,8 +782,8 @@ class RCSSEnv(gymnasium.Env):
             if wm is not None:
                 infos[agent_id] = {
                     "scores": {
-                        "left": wm.our_team_score,
-                        "right": wm.their_team_score,
+                        "left": wm.left_team_score,
+                        "right": wm.right_team_score,
                     },
                     "step": self._step_count,
                     "cycle": wm.cycle,
