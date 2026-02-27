@@ -9,6 +9,10 @@ bridges between the sidecar and the RL training loop.  It is intended to
 be started by :class:`~rcss_rl.env.rcss_env.RCSSEnv` when running in
 *remote* mode (i.e. connected to an actual rcss_cluster room).
 
+A single ``GameServicer`` handles **all** training agents in a match.
+Each agent's sidecar calls ``GetPlayerActions`` concurrently; the
+servicer dispatches by ``world_model.self.id`` (uniform number).
+
 The design follows the reference implementation from
 `PlaymakerServer-Python <https://github.com/Cyrus2D/PlaymakerServer-Python>`_.
 
@@ -17,6 +21,8 @@ Usage sketch (called internally by *RCSSEnv*)::
     from rcss_rl.env.grpc_service import GameServicer, serve
 
     servicer = GameServicer()
+    servicer.register_player(2)
+    servicer.register_player(3)
     server = serve(servicer, port=50051, block=False)
 
 Dependencies
@@ -39,14 +45,17 @@ from rcss_rl.proto import service_pb2_grpc
 
 logger = logging.getLogger(__name__)
 
+# Default timeout (seconds) for waiting on state/action exchanges.
+_DEFAULT_TIMEOUT: float = 30.0
+
 
 class GameServicer(service_pb2_grpc.GameServicer):
     """gRPC servicer implementing the ``Game`` service from *service.proto*.
 
-    The servicer maintains a shared state buffer that is written by the
-    sidecar (via ``GetPlayerActions``) and consumed by the environment's
-    ``step()`` method.  A pair of :class:`threading.Event` objects is used
-    to synchronise the two sides.
+    The servicer maintains **per-unum** state and action buffers.  When
+    multiple sidecar instances call ``GetPlayerActions`` concurrently, the
+    servicer dispatches each request to the correct buffer by reading
+    ``request.world_model.self.id``.
 
     Following the SoccerSimulationProxy protocol:
 
@@ -61,25 +70,41 @@ class GameServicer(service_pb2_grpc.GameServicer):
     * ``GetCoachActions`` and ``GetTrainerActions`` return empty
       action lists by default.
 
-    Attributes
-    ----------
-    state_ready : threading.Event
-        Set when a new ``State`` message has been received.
-    action_ready : threading.Event
-        Set when the training loop has produced a ``PlayerActions`` reply.
+    Call :meth:`register_player` for each training agent **before**
+    starting the gRPC server.  Only registered unums participate in the
+    synchronised state/action exchange.
     """
 
     def __init__(self) -> None:
-        self.state_ready = threading.Event()
-        self.action_ready = threading.Event()
+        self._states: dict[int, pb2.State] = {}
+        self._actions: dict[int, pb2.PlayerActions] = {}
+        self._state_events: dict[int, threading.Event] = {}
+        self._action_events: dict[int, threading.Event] = {}
 
-        self._current_state: pb2.State | None = None
-        self._current_actions: pb2.PlayerActions | None = None
         self._server_params: pb2.ServerParam | None = None
         self._player_params: pb2.PlayerParam | None = None
         self._player_types: dict[int, pb2.PlayerType] = {}
         self._debug_mode: bool = False
         self._lock = threading.Lock()
+
+    # ---- Player registration ---------------------------------------------
+
+    def register_player(self, unum: int) -> None:
+        """Register a training agent by uniform number.
+
+        Must be called before the gRPC server begins serving so that the
+        per-unum events are ready when the first ``GetPlayerActions``
+        arrives.
+        """
+        with self._lock:
+            self._state_events[unum] = threading.Event()
+            self._action_events[unum] = threading.Event()
+
+    @property
+    def registered_unums(self) -> frozenset[int]:
+        """Return the set of registered uniform numbers."""
+        with self._lock:
+            return frozenset(self._state_events.keys())
 
     # ---- RPC handlers (called by the SoccerSimulationProxy sidecar) ------
 
@@ -88,21 +113,40 @@ class GameServicer(service_pb2_grpc.GameServicer):
     ) -> pb2.PlayerActions:
         """Receive world state from sidecar and return player actions.
 
-        This method blocks until the training loop provides actions via
-        :meth:`set_actions`.
+        The sidecar is identified by ``request.world_model.self.id``
+        (unum).  If the unum is not registered, an empty
+        :class:`pb2.PlayerActions` is returned immediately.
         """
-        with self._lock:
-            self._current_state = request
-        self.state_ready.set()
-
-        # Wait for the training loop to compute actions.
-        self.action_ready.wait()
-        self.action_ready.clear()
+        wm = request.world_model
+        unum: int = wm.self.id if wm is not None else -1
 
         with self._lock:
-            actions = self._current_actions
-            # Clear after read — each cycle must produce fresh actions.
-            self._current_actions = None
+            state_event = self._state_events.get(unum)
+            action_event = self._action_events.get(unum)
+
+        if state_event is None or action_event is None:
+            logger.warning(
+                "GetPlayerActions from unregistered unum=%d; returning empty actions",
+                unum,
+            )
+            return pb2.PlayerActions()
+
+        # Store the state and signal RCSSEnv.
+        with self._lock:
+            self._states[unum] = request
+        state_event.set()
+
+        # Wait for the training loop to provide actions.
+        if not action_event.wait(timeout=_DEFAULT_TIMEOUT):
+            logger.warning(
+                "Timeout waiting for actions for unum=%d; returning empty actions",
+                unum,
+            )
+            return pb2.PlayerActions()
+        action_event.clear()
+
+        with self._lock:
+            actions = self._actions.pop(unum, None)
         return actions if actions is not None else pb2.PlayerActions()
 
     def GetCoachActions(
@@ -170,23 +214,39 @@ class GameServicer(service_pb2_grpc.GameServicer):
 
     # ---- Interface for the training loop ---------------------------------
 
-    def get_state(self) -> pb2.State | None:
-        """Return the latest :class:`pb2.State` message (or *None*)."""
+    def wait_for_state(self, unum: int, timeout: float = _DEFAULT_TIMEOUT) -> bool:
+        """Block until unum's state arrives.  Returns *True* on success."""
         with self._lock:
-            return self._current_state
+            event = self._state_events.get(unum)
+        if event is None:
+            raise RuntimeError(f"Player unum={unum} not registered")
+        result = event.wait(timeout=timeout)
+        if result:
+            event.clear()
+        return result
 
-    def get_world_model(self) -> pb2.WorldModel | None:
-        """Return the :class:`pb2.WorldModel` from the latest state."""
+    def get_state(self, unum: int) -> pb2.State | None:
+        """Return the latest :class:`pb2.State` for *unum*."""
         with self._lock:
-            if self._current_state is None:
+            return self._states.get(unum)
+
+    def get_world_model(self, unum: int) -> pb2.WorldModel | None:
+        """Return the :class:`pb2.WorldModel` for *unum*."""
+        with self._lock:
+            state = self._states.get(unum)
+            if state is None:
                 return None
-            return self._current_state.world_model
+            return state.world_model
 
-    def set_actions(self, actions: pb2.PlayerActions) -> None:
-        """Provide the :class:`pb2.PlayerActions` reply and wake the sidecar."""
+    def set_actions(self, unum: int, actions: pb2.PlayerActions) -> None:
+        """Provide actions for *unum* and wake its sidecar thread."""
         with self._lock:
-            self._current_actions = actions
-        self.action_ready.set()
+            action_event = self._action_events.get(unum)
+        if action_event is None:
+            raise RuntimeError(f"Player unum={unum} not registered")
+        with self._lock:
+            self._actions[unum] = actions
+        action_event.set()
 
     def get_server_params(self) -> pb2.ServerParam | None:
         """Return stored :class:`pb2.ServerParam` message."""
@@ -207,6 +267,20 @@ class GameServicer(service_pb2_grpc.GameServicer):
         """Return a copy of all stored player types."""
         with self._lock:
             return dict(self._player_types)
+
+    def reset(self) -> None:
+        """Clear all per-unum state/action buffers and events.
+
+        Call between episodes to prepare for fresh state arrivals.
+        Registration is preserved.
+        """
+        with self._lock:
+            self._states.clear()
+            self._actions.clear()
+            for ev in self._state_events.values():
+                ev.clear()
+            for ev in self._action_events.values():
+                ev.clear()
 
 
 def serve(
