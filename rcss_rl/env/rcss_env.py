@@ -174,10 +174,14 @@ class RCSSEnv(gymnasium.Env):
         # Spaces
         if config.mode == "remote":
             # Remote obs layout: ball(4) + self(7)
-            #   + teammates((num_left-1)*4) + opponents(num_right*4)
+            #   + teammates(n_teammates*4) + opponents(n_opponents*4)
             #   + match_state(4)
-            n_teammates = config.num_left - 1
-            n_opponents = config.num_right
+            # We choose n_teammates/n_opponents as the maximum possible counts
+            # over both sides so that observations are side-agnostic and never
+            # truncate features when team sizes differ.
+            max_players_per_team = max(config.num_left, config.num_right)
+            n_teammates = max_players_per_team - 1
+            n_opponents = max_players_per_team
             self._obs_dim = 4 + 7 + (n_teammates + n_opponents) * 4 + 4
         else:
             # Local obs layout: ball(4) + self_pos_vel(4)
@@ -576,7 +580,17 @@ class RCSSEnv(gymnasium.Env):
                 return p
             updates: dict[str, Any] = {}
             if p.grpc_host is None:
-                updates["grpc_host"] = self._cfg.grpc_host
+                env_host = self._cfg.grpc_host
+                if env_host and env_host != "0.0.0.0":
+                    updates["grpc_host"] = env_host
+                else:
+                    logger.warning(
+                        "EnvConfig.grpc_host is unset or non-routable (%r); "
+                        "not auto-filling PlayerConfig.grpc_host for "
+                        "policy_kind='agent'. Please configure a connectable "
+                        "gRPC host.",
+                        env_host,
+                    )
             if p.grpc_port is None:
                 updates["grpc_port"] = listen_port
             return replace(p, **updates) if updates else p

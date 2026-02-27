@@ -238,6 +238,28 @@ class TestBuildRoomRequest:
         assert "grpc_host" not in bot_policy
         assert "grpc_port" not in bot_policy
 
+    def test_agent_grpc_host_not_filled_when_bind_all(self) -> None:
+        """grpc_host='0.0.0.0' is non-routable; auto-fill skips it."""
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            grpc_host="0.0.0.0",
+            grpc_port=50051,
+            ally_players=[
+                PlayerConfig(unum=2, policy_kind="agent"),
+            ],
+            opponent_players=[],
+        )
+        env = RCSSEnv(cfg)
+        req = env._build_room_request()
+        d = req.to_dict()
+
+        agent_policy = d["teams"]["allies"]["players"][0]["policy"]
+        # grpc_host should NOT be set (0.0.0.0 is not routable)
+        assert "grpc_host" not in agent_policy
+        # grpc_port is still auto-filled
+        assert agent_policy["grpc_port"] == 50051
+
 
 class TestRemoteObsDim:
     """Remote obs_dim should match the _world_model_to_obs layout."""
@@ -269,6 +291,24 @@ class TestRemoteObsDim:
         # ball(4) + self(7) + teammates(0)*4 + opponents(1)*4 + match(4) = 19
         assert env._obs_dim == 19
         assert env.observation_space.shape == (19,)
+
+    def test_remote_obs_dim_asymmetric_teams(self) -> None:
+        """obs_dim uses max team size so it works for both sides."""
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            ally_players=[
+                PlayerConfig(unum=i, policy_kind="agent") for i in range(1, 3)
+            ],
+            opponent_players=[
+                PlayerConfig(unum=i, policy_kind="bot") for i in range(1, 5)
+            ],
+        )
+        env = RCSSEnv(cfg)
+        # max(2,4)=4 → n_teammates=3, n_opponents=4
+        # ball(4) + self(7) + 3*4 + 4*4 + match(4) = 43
+        assert env._obs_dim == 43
+        assert env.observation_space.shape == (43,)
 
     def test_local_obs_dim_unchanged(self) -> None:
         cfg = EnvConfig(
