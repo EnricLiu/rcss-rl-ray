@@ -118,7 +118,9 @@ class GameServicer(service_pb2_grpc.GameServicer):
         :class:`pb2.PlayerActions` is returned immediately.
         """
         wm = request.world_model
-        unum: int = wm.self.id if wm is not None else -1
+        unum: int = -1
+        if wm is not None and wm.HasField("self"):
+            unum = wm.self.id
 
         with self._lock:
             state_event = self._state_events.get(unum)

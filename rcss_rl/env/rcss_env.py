@@ -340,19 +340,26 @@ class RCSSEnv(gymnasium.Env):
         obs = np.zeros(self._obs_dim, dtype=np.float32)
         idx = 0
 
-        obs[idx : idx + 2] = self._ball_pos; idx += 2
-        obs[idx : idx + 2] = self._ball_vel; idx += 2
-        obs[idx : idx + 2] = self._agent_pos[agent_id]; idx += 2
-        obs[idx : idx + 2] = self._agent_vel[agent_id]; idx += 2
+        obs[idx : idx + 2] = self._ball_pos
+        idx += 2
+        obs[idx : idx + 2] = self._ball_vel
+        idx += 2
+        obs[idx : idx + 2] = self._agent_pos[agent_id]
+        idx += 2
+        obs[idx : idx + 2] = self._agent_vel[agent_id]
+        idx += 2
 
         for aid in self._all_id_list:
             if aid != agent_id:
                 obs[idx : idx + 2] = self._agent_pos[aid]
                 idx += 2
 
-        obs[idx] = float(self._left_score); idx += 1
-        obs[idx] = float(self._right_score); idx += 1
-        obs[idx] = self._step_count / max(self._cfg.max_episode_steps, 1); idx += 1
+        obs[idx] = float(self._left_score)
+        idx += 1
+        obs[idx] = float(self._right_score)
+        idx += 1
+        obs[idx] = self._step_count / max(self._cfg.max_episode_steps, 1)
+        idx += 1
 
         dist = float(np.linalg.norm(self._ball_pos - self._agent_pos[agent_id]))
         obs[idx] = 1.0 if dist <= self._cfg.kick_radius else 0.0
