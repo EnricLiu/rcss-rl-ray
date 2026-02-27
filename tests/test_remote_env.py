@@ -153,6 +153,91 @@ class TestBuildRoomRequest:
         assert d["teams"]["allies"]["players"][0]["policy"]["kind"] == "agent"
         assert d["teams"]["opponents"]["players"][0]["policy"]["kind"] == "bot"
 
+    def test_agent_grpc_fields_auto_filled(self) -> None:
+        """Agent players with no grpc_host/grpc_port get them from the env."""
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            grpc_host="192.168.1.10",
+            grpc_port=50051,
+            ally_players=[
+                PlayerConfig(unum=2, policy_kind="agent"),
+            ],
+            opponent_players=[
+                PlayerConfig(unum=1, policy_kind="bot"),
+            ],
+        )
+        env = RCSSEnv(cfg)
+        req = env._build_room_request()
+        d = req.to_dict()
+
+        agent_policy = d["teams"]["allies"]["players"][0]["policy"]
+        assert agent_policy["grpc_host"] == "192.168.1.10"
+        assert agent_policy["grpc_port"] == 50051
+
+    def test_agent_grpc_fields_not_overridden_when_set(self) -> None:
+        """Explicitly set grpc_host/grpc_port are preserved."""
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            grpc_host="192.168.1.10",
+            grpc_port=50051,
+            ally_players=[
+                PlayerConfig(unum=2, policy_kind="agent",
+                             grpc_host="10.0.0.1", grpc_port=9999),
+            ],
+            opponent_players=[],
+        )
+        env = RCSSEnv(cfg)
+        req = env._build_room_request()
+        d = req.to_dict()
+
+        agent_policy = d["teams"]["allies"]["players"][0]["policy"]
+        assert agent_policy["grpc_host"] == "10.0.0.1"
+        assert agent_policy["grpc_port"] == 9999
+
+    def test_agent_grpc_port_uses_computed_listen_port(self) -> None:
+        """When worker/vector indices offset the port, auto-fill uses
+        the computed listen port."""
+        cfg_dict = {
+            "mode": "remote",
+            "allocator_url": "http://fake:6000",
+            "grpc_port": 50051,
+            "worker_index": 2,
+            "vector_index": 3,
+            "ally_players": [
+                {"unum": 2, "policy_kind": "agent"},
+            ],
+            "opponent_players": [],
+        }
+        env = RCSSEnv(cfg_dict)
+        # Computed: 50051 + 2*10 + 3 = 50074
+        assert env._listen_port == 50074
+
+        req = env._build_room_request()
+        d = req.to_dict()
+        agent_policy = d["teams"]["allies"]["players"][0]["policy"]
+        assert agent_policy["grpc_port"] == 50074
+
+    def test_bot_players_not_modified(self) -> None:
+        """Bot players should not have grpc fields added."""
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            ally_players=[],
+            opponent_players=[
+                PlayerConfig(unum=1, policy_kind="bot",
+                             policy_image="HELIOS/helios-base"),
+            ],
+        )
+        env = RCSSEnv(cfg)
+        req = env._build_room_request()
+        d = req.to_dict()
+
+        bot_policy = d["teams"]["opponents"]["players"][0]["policy"]
+        assert "grpc_host" not in bot_policy
+        assert "grpc_port" not in bot_policy
+
 
 class TestRemoteObsDim:
     """Remote obs_dim should match the _world_model_to_obs layout."""

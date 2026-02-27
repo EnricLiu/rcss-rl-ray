@@ -204,6 +204,11 @@ class RCSSEnv(gymnasium.Env):
         self._grpc_server: Any = None
         self._allocator: Any = None
         self._room_id: str | None = None
+        self._listen_port: int = (
+            config.grpc_port
+            + self._worker_index * _MAX_ENVS_PER_WORKER
+            + self._vector_index
+        )
         self._prev_world_models: dict[int, Any] = {}
 
         if config.mode == "remote":
@@ -488,7 +493,12 @@ class RCSSEnv(gymnasium.Env):
             raise gymnasium.error.ResetNeeded(
                 "Cannot allocate simulation room"
             ) from exc
-        self._room_id = response.get("room_id")
+        room_id = response.get("room_id")
+        if not room_id:
+            raise gymnasium.error.ResetNeeded(
+                f"Allocator did not return a valid 'room_id'. Response: {response!r}"
+            )
+        self._room_id = room_id
 
         # 5. Wait for all training agents' sidecars to send initial state.
         self._wait_for_all_states()
@@ -548,14 +558,34 @@ class RCSSEnv(gymnasium.Env):
     # ---- Remote helpers --------------------------------------------------
 
     def _build_room_request(self) -> Any:
-        """Build a :class:`RoomRequest` from the current :class:`EnvConfig`."""
+        """Build a :class:`RoomRequest` from the current :class:`EnvConfig`.
+
+        For ``policy_kind="agent"`` players whose ``grpc_host`` or
+        ``grpc_port`` are not explicitly set, this method fills them
+        from the environment's own ``grpc_host`` and the computed listen
+        port so that sidecars connect to the correct endpoint.
+        """
+        from dataclasses import replace
+
         from rcss_rl.env.allocator_client import RoomRequest
+
+        listen_port = self._listen_port
+
+        def _fill_grpc(p: PlayerConfig) -> PlayerConfig:
+            if p.policy_kind != "agent":
+                return p
+            updates: dict[str, Any] = {}
+            if p.grpc_host is None:
+                updates["grpc_host"] = self._cfg.grpc_host
+            if p.grpc_port is None:
+                updates["grpc_port"] = listen_port
+            return replace(p, **updates) if updates else p
 
         return RoomRequest(
             ally_name=self._cfg.ally_team_name,
             opponent_name=self._cfg.opponent_team_name,
-            ally_players=self._cfg.ally_players,
-            opponent_players=self._cfg.opponent_players,
+            ally_players=[_fill_grpc(p) for p in self._cfg.ally_players],
+            opponent_players=[_fill_grpc(p) for p in self._cfg.opponent_players],
             time_up=self._cfg.time_up,
             goal_limit_l=self._cfg.goal_limit_l,
             referee_enable=self._cfg.referee_enable,
@@ -566,22 +596,18 @@ class RCSSEnv(gymnasium.Env):
     def _start_grpc_server(self) -> None:
         """Start the gRPC server if not already running.
 
-        The listen port is derived from ``grpc_port`` plus offsets from
-        ``worker_index`` and ``vector_index`` so that multiple env
-        instances in the same process/host do not collide.
+        The listen port (``self._listen_port``) is computed at
+        construction from ``grpc_port + worker_index * MAX + vector_index``
+        so that multiple env instances in the same process/host do not
+        collide.
         """
         if self._grpc_server is not None:
             return
         from rcss_rl.env.grpc_service import serve
 
-        port = (
-            self._cfg.grpc_port
-            + self._worker_index * _MAX_ENVS_PER_WORKER
-            + self._vector_index
-        )
         self._grpc_server = serve(
             self._servicer,
-            port=port,
+            port=self._listen_port,
             block=False,
         )
 
