@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 def _player_config_from_dict(d: dict[str, Any]) -> PlayerConfig:
     """Reconstruct a :class:`PlayerConfig` from a plain dict."""
-    d = dict(d)  # shallow copy
-    init_state = d.pop("init_state", None)
+    d = dict(d)  # shallow copy — original dict is not mutated
+    init_state = d.pop("init_state", None)  # extract before **d unpacking
     if isinstance(init_state, dict):
         init_state = PlayerInitState(**init_state)
     return PlayerConfig(**d, init_state=init_state)
@@ -42,8 +42,9 @@ def _env_config_from_dict(d: dict[str, Any]) -> EnvConfig:
 
     Handles the ``ally_players`` / ``opponent_players`` lists whose
     elements may be plain dicts (as produced by ``dataclasses.asdict``).
+    The original dict *d* is not mutated.
     """
-    d = dict(d)  # shallow copy
+    d = dict(d)  # shallow copy — original dict is not mutated
     for key in ("ally_players", "opponent_players"):
         raw = d.get(key)
         if raw is not None:
