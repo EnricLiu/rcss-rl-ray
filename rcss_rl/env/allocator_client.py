@@ -20,85 +20,18 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from rcss_rl.config import PlayerConfig, PlayerInitState
+
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PlayerInitState:
-    """Initial state overrides for a single player.
-
-    Matches the ``init_state`` block in *template.json*.
-
-    Attributes
-    ----------
-    pos_x : float | None
-        Normalised X position (0–1 range, ``None`` = default).
-    pos_y : float | None
-        Normalised Y position (0–1 range, ``None`` = default).
-    stamina : float | None
-        Starting stamina (``None`` = default).
-    """
-
-    pos_x: float | None = None
-    pos_y: float | None = None
-    stamina: float | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialise; omit *None* values."""
-        d: dict[str, Any] = {}
-        if self.pos_x is not None and self.pos_y is not None:
-            d["pos"] = {"x": self.pos_x, "y": self.pos_y}
-        if self.stamina is not None:
-            d["stamina"] = self.stamina
-        return d
-
-
-@dataclass
-class PlayerConfig:
-    """Configuration for a single player in a match.
-
-    Mirrors the per-player block in the *template.json* accepted by the
-    rcss_cluster match-composer sidecar.
-
-    Attributes
-    ----------
-    unum : int
-        Uniform number (1-11).
-    goalie : bool
-        Whether this player is a goalie.
-    policy_kind : str
-        ``"bot"`` for a scripted agent or ``"agent"`` for an RL training
-        agent (SoccerSimulationProxy).
-    policy_image : str | None
-        Docker image name.  For ``"bot"`` this is the bot image
-        (e.g. ``"HELIOS/helios-base"``); for ``"agent"`` this is the
-        SoccerSimulationProxy image
-        (e.g. ``"Cyrus2D/SoccerSimulationProxy"``).
-    policy_agent : str | None
-        Agent type identifier, used when *policy_kind* is ``"agent"``
-        (e.g. ``"ssp"``).
-    grpc_host : str | None
-        gRPC host address that the sidecar will connect to.
-        Only used when *policy_kind* is ``"agent"``.
-    grpc_port : int | None
-        gRPC port that the sidecar will connect to.
-        Only used when *policy_kind* is ``"agent"``.
-    init_state : PlayerInitState | None
-        Optional initial state overrides (position, stamina).
-    blocklist : dict[str, bool] | None
-        Optional map of action names to blocked status
-        (e.g. ``{"dash": True, "catch": False}``).
-    """
-
-    unum: int = 1
-    goalie: bool = False
-    policy_kind: str = "agent"
-    policy_image: str | None = None
-    policy_agent: str | None = None
-    grpc_host: str | None = None
-    grpc_port: int | None = None
-    init_state: PlayerInitState | None = None
-    blocklist: dict[str, bool] | None = None
+# Re-export so existing imports from this module keep working.
+__all__ = [
+    "PlayerInitState",
+    "PlayerConfig",
+    "RoomRequest",
+    "AllocatorClient",
+]
 
 
 @dataclass

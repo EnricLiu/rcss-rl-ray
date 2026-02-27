@@ -5,13 +5,24 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rcss_rl.config import EnvConfig
+from rcss_rl.config import EnvConfig, PlayerConfig
 from rcss_rl.env.rcss_env import RCSSEnv
 
 
 @pytest.fixture()
 def env() -> RCSSEnv:
-    cfg = EnvConfig(num_left=2, num_right=2, max_episode_steps=50, seed=42)
+    cfg = EnvConfig(
+        ally_players=[
+            PlayerConfig(unum=1, goalie=True),
+            PlayerConfig(unum=2, goalie=False),
+        ],
+        opponent_players=[
+            PlayerConfig(unum=1, goalie=True),
+            PlayerConfig(unum=2, goalie=False),
+        ],
+        max_episode_steps=50,
+        seed=42,
+    )
     return RCSSEnv(cfg)
 
 
@@ -109,7 +120,14 @@ class TestRCSSEnvStep:
 
 class TestRCSSEnvConfig:
     def test_dict_config(self) -> None:
-        env = RCSSEnv({"num_left": 1, "num_right": 1})
+        env = RCSSEnv({
+            "ally_players": [
+                {"unum": 1, "goalie": True, "policy_kind": "agent"},
+            ],
+            "opponent_players": [
+                {"unum": 1, "goalie": True, "policy_kind": "bot"},
+            ],
+        })
         assert len(env._agent_ids) == 2
 
     def test_default_config(self) -> None:

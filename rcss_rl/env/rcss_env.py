@@ -23,9 +23,35 @@ import gymnasium
 import numpy as np
 from gymnasium import spaces
 
-from rcss_rl.config import EnvConfig
+from rcss_rl.config import EnvConfig, PlayerConfig, PlayerInitState
 
 logger = logging.getLogger(__name__)
+
+
+def _player_config_from_dict(d: dict[str, Any]) -> PlayerConfig:
+    """Reconstruct a :class:`PlayerConfig` from a plain dict."""
+    d = dict(d)  # shallow copy
+    init_state = d.pop("init_state", None)
+    if isinstance(init_state, dict):
+        init_state = PlayerInitState(**init_state)
+    return PlayerConfig(**d, init_state=init_state)
+
+
+def _env_config_from_dict(d: dict[str, Any]) -> EnvConfig:
+    """Reconstruct an :class:`EnvConfig` from a (possibly nested) dict.
+
+    Handles the ``ally_players`` / ``opponent_players`` lists whose
+    elements may be plain dicts (as produced by ``dataclasses.asdict``).
+    """
+    d = dict(d)  # shallow copy
+    for key in ("ally_players", "opponent_players"):
+        raw = d.get(key)
+        if raw is not None:
+            d[key] = [
+                _player_config_from_dict(p) if isinstance(p, dict) else p
+                for p in raw
+            ]
+    return EnvConfig(**d)
 
 # ---------------------------------------------------------------------------
 # Discrete action definitions
@@ -90,7 +116,7 @@ class RCSSEnv(gymnasium.Env):
         if config is None:
             config = EnvConfig()
         elif isinstance(config, dict):
-            config = EnvConfig(**config)
+            config = _env_config_from_dict(config)
 
         self._cfg: EnvConfig = config
         n_agents = config.num_left + config.num_right

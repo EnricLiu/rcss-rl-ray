@@ -113,63 +113,90 @@ close()                                   │                       │
 
 ### 4.1 配置扩展 (`EnvConfig`)
 
+`EnvConfig` 直接复用 `PlayerConfig` 列表来描述双方队伍构成，与 [template.json](https://github.com/EnricLiu/rcss_cluster/blob/sidecar/match_composer/sidecars/match_composer/docs/template.json) 结构完全对齐。每个球员（最多 22 人）均可独立配置为 bot 或 agent，并携带 per-player 的初始状态、动作黑名单、gRPC 地址等。
+
 ```python
 @dataclass
 class EnvConfig:
-    # --- 现有配置 ---
-    num_left: int = 3           # 左方队伍总人数 (bot + agent)
-    num_right: int = 3          # 右方队伍总人数 (bot + agent)
-    max_episode_steps: int = 6000  # 训练端的 episode 截断步数 (可与 time_up 不同)
-    # ... 奖励参数等 ...
+    # --- 队伍构成 (直接对应 template.json → teams) ---
+    ally_team_name: str = "RLAgent"        # template.json → teams.allies.name
+    opponent_team_name: str = "Bot"        # template.json → teams.opponents.name
+    ally_players: list[PlayerConfig] = field(
+        default_factory=_default_ally_players,
+    )
+    opponent_players: list[PlayerConfig] = field(
+        default_factory=_default_opponent_players,
+    )
 
-    # --- 新增：远程模式配置 ---
-    mode: str = "local"                       # "local" | "remote"
-    allocator_url: str = ""                   # allocator REST endpoint
-    grpc_host: str = "0.0.0.0"               # gRPC 服务监听地址
-    grpc_port: int = 50051                   # gRPC 服务端口 (每个 env 实例一个)
-    grpc_advertise_host: str = "localhost"   # 告知 sidecar 的回连地址
+    # --- 停止条件 (template.json → stopping) ---
+    time_up: int = 6000                    # rcssserver 模拟 cycle 上限
+    goal_limit_l: int = 0                  # 左方进球达到此数即停 (0=不限)
 
-    # --- 新增：队伍构成 ---
-    left_agents: list[int] = field(default_factory=lambda: [2, 3, 4])
-    # 左方参与训练的球员 uniform numbers
-    right_agents: list[int] = field(default_factory=list)
-    # 右方参与训练的球员 uniform numbers (通常为空)
-    left_bot_image: str = "HELIOS/helios-base"    # 左方 bot 的 Docker 镜像
-    right_bot_image: str = "HELIOS/helios-base"   # 右方 bot 的 Docker 镜像
-    agent_image: str = "Cyrus2D/SoccerSimulationProxy"  # agent sidecar 的镜像
-    agent_type: str = "ssp"                       # agent 类型标识 (如 "ssp")
+    # --- 裁判 (template.json → referee) ---
+    referee_enable: bool = False           # 是否启用裁判模块
 
-    # --- 新增：停止条件 (对应 template.json → stopping) ---
-    time_up: int = 6000                      # rcssserver 模拟 cycle 上限
-    goal_limit_l: int = 0                    # 左方进球达到此数即停 (0=不限)
+    # --- 初始状态 (template.json → init_state) ---
+    ball_init_x: float | None = None       # 球的初始归一化 X 坐标 (0~1)
+    ball_init_y: float | None = None       # 球的初始归一化 Y 坐标 (0~1)
 
-    # --- 新增：裁判 (对应 template.json → referee) ---
-    referee_enable: bool = False             # 是否启用裁判模块
+    # --- 训练端截断 ---
+    max_episode_steps: int = 200           # episode 截断步数 (可与 time_up 不同)
 
-    # --- 新增：初始状态 (对应 template.json → init_state) ---
-    ball_init_x: float | None = None         # 球的初始归一化 X 坐标 (0~1)
-    ball_init_y: float | None = None         # 球的初始归一化 Y 坐标 (0~1)
+    # --- 远程模式 ---
+    mode: str = "local"                    # "local" | "remote"
+    allocator_url: str = ""                # allocator REST endpoint
+    grpc_host: str = "0.0.0.0"            # gRPC 服务监听地址
+    grpc_port: int = 50051                 # gRPC 服务端口
+
+    # --- 本地模拟参数 (仅 local 模式使用) ---
+    field_half_x: float = 10.0
+    move_speed: float = 0.5
+    kick_radius: float = 1.0
+    kick_power: float = 2.0
+    goal_reward: float = 10.0
+    distance_penalty: float = 0.01
+    seed: int | None = None
+
+    # --- 派生属性 ---
+    @property
+    def num_left(self) -> int:
+        return len(self.ally_players)
+
+    @property
+    def num_right(self) -> int:
+        return len(self.opponent_players)
+```
+
+每个 `PlayerConfig` 的定义如下（同时被 `EnvConfig` 和 `RoomRequest` 复用）：
+
+```python
+@dataclass
+class PlayerConfig:
+    unum: int = 1
+    goalie: bool = False
+    policy_kind: str = "agent"        # "bot" | "agent"
+    policy_image: str | None = None   # Docker 镜像
+    policy_agent: str | None = None   # agent 类型 (如 "ssp")
+    grpc_host: str | None = None      # gRPC 回连地址 (仅 agent)
+    grpc_port: int | None = None      # gRPC 回连端口 (仅 agent)
+    init_state: PlayerInitState | None = None  # 可选初始状态
+    blocklist: dict[str, bool] | None = None   # 可选动作黑名单
 ```
 
 > **与 template.json 的映射说明**
 >
-> allocator 期望的 `template.json` 结构来源于 [rcss_cluster/match_composer](https://github.com/EnricLiu/rcss_cluster/blob/sidecar/match_composer/sidecars/match_composer/docs/template.json)。
-> `EnvConfig` 中的字段与 template.json 的对应关系：
->
 > | EnvConfig 字段 | template.json 路径 | 说明 |
 > |---|---|---|
+> | `ally_team_name` | `teams.allies.name` | 己方队伍名称 |
+> | `opponent_team_name` | `teams.opponents.name` | 对方队伍名称 |
+> | `ally_players` | `teams.allies.players` | 己方球员列表 (每个 PlayerConfig) |
+> | `opponent_players` | `teams.opponents.players` | 对方球员列表 |
 > | `time_up` | `stopping.time_up` | 模拟 cycle 上限 |
 > | `goal_limit_l` | `stopping.goal_l` | 左方进球数停止条件 |
 > | `referee_enable` | `referee.enable` | 是否启用裁判 |
 > | `ball_init_x/y` | `init_state.ball.x/y` | 球初始位置 |
-> | `grpc_advertise_host` | 各 agent player → `policy.grpc_host` | sidecar 回连地址 |
-> | `grpc_port` | 各 agent player → `policy.grpc_port` | sidecar 回连端口 |
-> | `agent_image` | 各 agent player → `policy.image` | SSP 镜像名 |
-> | `agent_type` | 各 agent player → `policy.agent` | agent 类型 (如 "ssp") |
-> | `left_bot_image` | 左方 bot player → `policy.image` | bot 镜像名 |
-> | `right_bot_image` | 右方 bot player → `policy.image` | bot 镜像名 |
 >
-> per-player 的 `init_state`（位置/体力）和 `blocklist`（禁用动作）在高级场景中由 `PlayerConfig` 单独控制，详见 [§6](#6-playerconfig-与-roomrequest-改进)。
+> 每个 `PlayerConfig` 中的字段直接映射到 template.json 的 per-player 块，包括 `policy.kind`、`policy.image`、`policy.agent`、`policy.grpc_host`、`policy.grpc_port`、`init_state`（位置/体力）、`blocklist`（禁用动作）等。
 
 ### 4.2 RCSSEnv 改造
 
@@ -267,44 +294,16 @@ def _stop_grpc_server(self):
 
 ### 4.4 RoomRequest 构建
 
-`RoomRequest` 需要根据环境配置生成符合 `template.json` 格式的请求。
-在 template.json 中，每个 `kind: "agent"` 球员的 `policy` 块**单独**携带 `grpc_host`/`grpc_port`、`agent` 类型和 `image` 字段。虽然所有训练 agent 指向同一个 gRPC 服务器，但这些字段需要写在每个 agent 球员的 policy 内部：
+由于 `EnvConfig` 直接包含 `PlayerConfig` 列表，`RoomRequest` 的构建变得非常直接——只需将 `EnvConfig` 中的字段透传给 `RoomRequest`，无需再做 unum → agent/bot 的判定逻辑：
 
 ```python
 def _build_room_request(self) -> RoomRequest:
-    """根据配置构建房间请求"""
-    left_players = []
-    right_players = []
-
-    # 左方队伍
-    for unum in range(1, self._cfg.num_left + 1):
-        if unum in self._cfg.left_agents:
-            # 训练 agent — 每个 agent 的 policy 中包含 gRPC 地址
-            left_players.append(PlayerConfig(
-                unum=unum,
-                goalie=(unum == 1),
-                policy_kind="agent",
-                policy_agent=self._cfg.agent_type,
-                policy_image=self._cfg.agent_image,
-                grpc_host=self._cfg.grpc_advertise_host,
-                grpc_port=self._cfg.grpc_port,
-            ))
-        else:
-            # Bot 球员
-            left_players.append(PlayerConfig(
-                unum=unum,
-                goalie=(unum == 1),
-                policy_kind="bot",
-                policy_image=self._cfg.left_bot_image,
-            ))
-
-    # 右方队伍同理...
-
+    """根据 EnvConfig 构建房间请求，直接复用 PlayerConfig 列表"""
     return RoomRequest(
-        ally_name="RLAgent",
-        opponent_name="Bot",
-        ally_players=left_players,
-        opponent_players=right_players,
+        ally_name=self._cfg.ally_team_name,
+        opponent_name=self._cfg.opponent_team_name,
+        ally_players=self._cfg.ally_players,
+        opponent_players=self._cfg.opponent_players,
         time_up=self._cfg.time_up,
         goal_limit_l=self._cfg.goal_limit_l,
         referee_enable=self._cfg.referee_enable,
@@ -683,35 +682,36 @@ class GameServicer:
 
 ## 6. PlayerConfig 与 RoomRequest 改进
 
-### 6.1 PlayerConfig 包含完整 template.json 字段
+### 6.1 PlayerConfig 定义位于 config.py
 
-`PlayerConfig` 需要能表达 template.json 中每个球员的完整配置，包括 per-player 的 gRPC 地址（用于 agent）、初始状态和动作黑名单：
+`PlayerConfig` 和 `PlayerInitState` 定义在 `rcss_rl/config.py` 中，同时被 `EnvConfig` 和 `RoomRequest` 复用。`allocator_client.py` 从 `config.py` 导入并重导出这两个类，保持向后兼容。
 
 ```python
+# rcss_rl/config.py
 @dataclass
 class PlayerInitState:
-    """per-player 初始状态覆盖"""
-    pos_x: float | None = None     # 归一化 X 坐标 (0~1)
-    pos_y: float | None = None     # 归一化 Y 坐标 (0~1)
-    stamina: float | None = None   # 初始体力
+    pos_x: float | None = None
+    pos_y: float | None = None
+    stamina: float | None = None
 
 @dataclass
 class PlayerConfig:
     unum: int = 1
     goalie: bool = False
-    policy_kind: str = "agent"        # "bot" | "agent"
-    policy_image: str | None = None   # Docker 镜像 (bot 和 agent 均使用)
-    policy_agent: str | None = None   # agent 类型 (如 "ssp"), 仅 kind="agent"
-    grpc_host: str | None = None      # gRPC 回连地址, 仅 kind="agent"
-    grpc_port: int | None = None      # gRPC 回连端口, 仅 kind="agent"
-    init_state: PlayerInitState | None = None  # 可选初始状态
-    blocklist: dict[str, bool] | None = None   # 可选动作黑名单
+    policy_kind: str = "agent"
+    policy_image: str | None = None
+    policy_agent: str | None = None
+    grpc_host: str | None = None
+    grpc_port: int | None = None
+    init_state: PlayerInitState | None = None
+    blocklist: dict[str, bool] | None = None
 ```
 
-> **说明**：gRPC 配置在**每个 agent 球员的 policy 内**分别指定，这与 template.json 的格式一致。
-> 虽然通常所有 agent 指向同一个 gRPC 服务器（地址和端口相同），但结构上它们是 per-player 的。
+`EnvConfig` 直接使用 `list[PlayerConfig]` 描述队伍，`RoomRequest` 构建时直接透传，无需再做 unum → agent/bot 的判断。
 
 ### 6.2 RoomRequest.to_dict() 输出完整 template.json
+
+`RoomRequest` 的字段与 `EnvConfig` 的 template.json 相关字段一一对应。`_build_room_request()` 只需透传 `EnvConfig` 中的 `ally_players` / `opponent_players` 列表：
 
 ```python
 @dataclass
@@ -721,56 +721,13 @@ class RoomRequest:
     ally_players: list[PlayerConfig] = field(default_factory=list)
     opponent_players: list[PlayerConfig] = field(default_factory=list)
     time_up: int = 6000
-    goal_limit_l: int = 0              # stopping.goal_l
-    referee_enable: bool = False       # referee.enable
-    ball_init_x: float | None = None   # init_state.ball.x
-    ball_init_y: float | None = None   # init_state.ball.y
+    goal_limit_l: int = 0
+    referee_enable: bool = False
+    ball_init_x: float | None = None
+    ball_init_y: float | None = None
 
 def to_dict(self) -> dict:
-    def _player(p: PlayerConfig) -> dict:
-        policy = {"kind": p.policy_kind}
-        if p.policy_image:
-            policy["image"] = p.policy_image
-        if p.policy_kind == "agent":
-            if p.policy_agent:
-                policy["agent"] = p.policy_agent
-            if p.grpc_host is not None:
-                policy["grpc_host"] = p.grpc_host
-            if p.grpc_port is not None:
-                policy["grpc_port"] = p.grpc_port
-        result = {
-            "unum": p.unum,
-            "goalie": p.goalie,
-            "policy": policy,
-        }
-        if p.init_state is not None:
-            init_dict = p.init_state.to_dict()
-            if init_dict:
-                result["init_state"] = init_dict
-        if p.blocklist:
-            result["blocklist"] = p.blocklist
-        return result
-
-    result = {
-        "api_version": 1,
-        "referee": {"enable": self.referee_enable},
-        "stopping": {"time_up": self.time_up, "goal_l": self.goal_limit_l},
-        "teams": {
-            "allies": {
-                "name": self.ally_name,
-                "players": [_player(p) for p in self.ally_players],
-            },
-            "opponents": {
-                "name": self.opponent_name,
-                "players": [_player(p) for p in self.opponent_players],
-            },
-        },
-    }
-    if self.ball_init_x is not None and self.ball_init_y is not None:
-        result["init_state"] = {
-            "ball": {"x": self.ball_init_x, "y": self.ball_init_y},
-        }
-    return result
+    # ... 见 allocator_client.py 中的实现 ...
 ```
 
 ## 7. 错误处理与鲁棒性
