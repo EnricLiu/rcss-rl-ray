@@ -101,6 +101,7 @@ class GameServicer(service_pb2_grpc.GameServicer):
 
         with self._lock:
             actions = self._current_actions
+            # Clear after read — each cycle must produce fresh actions.
             self._current_actions = None
         return actions if actions is not None else pb2.PlayerActions()
 
