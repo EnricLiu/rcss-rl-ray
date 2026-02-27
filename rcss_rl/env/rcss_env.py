@@ -125,12 +125,24 @@ class RCSSEnv(gymnasium.Env):
     def __init__(self, config: EnvConfig | dict[str, Any] | None = None) -> None:
         super().__init__()
 
+        # RLlib may inject worker_index / vector_index into the config dict.
+        # Extract them before converting to EnvConfig (which doesn't have
+        # those fields).  We shallow-copy to avoid mutating the caller's dict.
+        worker_index: int = 0
+        vector_index: int = 0
+        if isinstance(config, dict):
+            config = dict(config)  # shallow copy — caller's dict is not mutated
+            worker_index = config.pop("worker_index", 0)
+            vector_index = config.pop("vector_index", 0)
+
         if config is None:
             config = EnvConfig()
         elif isinstance(config, dict):
             config = _env_config_from_dict(config)
 
         self._cfg: EnvConfig = config
+        self._worker_index = worker_index
+        self._vector_index = vector_index
         n_agents = config.num_left + config.num_right
 
         # Identify which players are RL-training agents (kind="agent").
@@ -160,7 +172,17 @@ class RCSSEnv(gymnasium.Env):
         ] + [f"right_{i}" for i in range(config.num_right)]
 
         # Spaces
-        self._obs_dim = 8 + (n_agents - 1) * 2 + 4
+        if config.mode == "remote":
+            # Remote obs layout: ball(4) + self(7)
+            #   + teammates((num_left-1)*4) + opponents(num_right*4)
+            #   + match_state(4)
+            n_teammates = config.num_left - 1
+            n_opponents = config.num_right
+            self._obs_dim = 4 + 7 + (n_teammates + n_opponents) * 4 + 4
+        else:
+            # Local obs layout: ball(4) + self_pos_vel(4)
+            #   + other_agents_pos((n_agents-1)*2) + scores(2) + step(1) + kickable(1)
+            self._obs_dim = 8 + (n_agents - 1) * 2 + 4
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self._obs_dim,), dtype=np.float32
         )
@@ -507,19 +529,19 @@ class RCSSEnv(gymnasium.Env):
         self._wait_for_all_states()
 
         # 3. Collect observations, rewards, termination, truncation.
+        #    Use all training agents for consistent return dicts (not just
+        #    acting_agents) so that multi-agent consumers see aligned keys.
         prev_wms = self._prev_world_models
         curr_wms = self._collect_world_models()
         self._prev_world_models = curr_wms
 
-        acting_agents = set(action_dict.keys())
-
         obs = self._collect_remote_observations()
         rewards = {
             aid: self._compute_remote_reward(aid, prev_wms, curr_wms)
-            for aid in acting_agents
+            for aid in self._agent_id_list
         }
         terminateds, truncateds = self._check_remote_done(curr_wms)
-        infos = self._collect_remote_infos(curr_wms, acting_agents)
+        infos = self._collect_remote_infos(curr_wms, set(self._agent_id_list))
 
         return obs, rewards, terminateds, truncateds, infos
 
@@ -542,14 +564,24 @@ class RCSSEnv(gymnasium.Env):
         )
 
     def _start_grpc_server(self) -> None:
-        """Start the gRPC server if not already running."""
+        """Start the gRPC server if not already running.
+
+        The listen port is derived from ``grpc_port`` plus offsets from
+        ``worker_index`` and ``vector_index`` so that multiple env
+        instances in the same process/host do not collide.
+        """
         if self._grpc_server is not None:
             return
         from rcss_rl.env.grpc_service import serve
 
+        port = (
+            self._cfg.grpc_port
+            + self._worker_index * _MAX_ENVS_PER_WORKER
+            + self._vector_index
+        )
         self._grpc_server = serve(
             self._servicer,
-            port=self._cfg.grpc_port,
+            port=port,
             block=False,
         )
 

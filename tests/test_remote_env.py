@@ -152,3 +152,88 @@ class TestBuildRoomRequest:
         assert d["teams"]["opponents"]["name"] == "TheirTeam"
         assert d["teams"]["allies"]["players"][0]["policy"]["kind"] == "agent"
         assert d["teams"]["opponents"]["players"][0]["policy"]["kind"] == "bot"
+
+
+class TestRemoteObsDim:
+    """Remote obs_dim should match the _world_model_to_obs layout."""
+
+    def test_remote_obs_dim_3v3(self) -> None:
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            ally_players=[
+                PlayerConfig(unum=i, policy_kind="agent") for i in range(1, 4)
+            ],
+            opponent_players=[
+                PlayerConfig(unum=i, policy_kind="bot") for i in range(1, 4)
+            ],
+        )
+        env = RCSSEnv(cfg)
+        # ball(4) + self(7) + teammates(2)*4 + opponents(3)*4 + match(4) = 35
+        assert env._obs_dim == 35
+        assert env.observation_space.shape == (35,)
+
+    def test_remote_obs_dim_1v1(self) -> None:
+        cfg = EnvConfig(
+            mode="remote",
+            allocator_url="http://fake:6000",
+            ally_players=[PlayerConfig(unum=1, policy_kind="agent")],
+            opponent_players=[PlayerConfig(unum=1, policy_kind="bot")],
+        )
+        env = RCSSEnv(cfg)
+        # ball(4) + self(7) + teammates(0)*4 + opponents(1)*4 + match(4) = 19
+        assert env._obs_dim == 19
+        assert env.observation_space.shape == (19,)
+
+    def test_local_obs_dim_unchanged(self) -> None:
+        cfg = EnvConfig(
+            ally_players=[
+                PlayerConfig(unum=1, goalie=True),
+                PlayerConfig(unum=2),
+            ],
+            opponent_players=[
+                PlayerConfig(unum=1, goalie=True),
+                PlayerConfig(unum=2),
+            ],
+        )
+        env = RCSSEnv(cfg)
+        # local: 8 + (4-1)*2 + 4 = 18
+        assert env._obs_dim == 18
+        assert env.observation_space.shape == (18,)
+
+
+class TestWorkerVectorIndexExtraction:
+    """worker_index / vector_index are extracted from dict configs."""
+
+    def test_default_indices(self) -> None:
+        env = RCSSEnv()
+        assert env._worker_index == 0
+        assert env._vector_index == 0
+
+    def test_dict_config_with_indices(self) -> None:
+        cfg = {
+            "worker_index": 3,
+            "vector_index": 2,
+            "ally_players": [
+                {"unum": 1, "goalie": True, "policy_kind": "agent"},
+            ],
+            "opponent_players": [
+                {"unum": 1, "goalie": True, "policy_kind": "bot"},
+            ],
+        }
+        env = RCSSEnv(cfg)
+        assert env._worker_index == 3
+        assert env._vector_index == 2
+
+    def test_dict_config_without_indices(self) -> None:
+        cfg = {
+            "ally_players": [
+                {"unum": 1, "goalie": True, "policy_kind": "agent"},
+            ],
+            "opponent_players": [
+                {"unum": 1, "goalie": True, "policy_kind": "bot"},
+            ],
+        }
+        env = RCSSEnv(cfg)
+        assert env._worker_index == 0
+        assert env._vector_index == 0
