@@ -526,7 +526,11 @@ class GameServicer(service_pb2_grpc.GameServicer):
         self._action_events[unum] = threading.Event()
 
     def GetPlayerActions(self, request: pb2.State, context) -> pb2.PlayerActions:
-        unum = request.world_model.self.id
+        wm = request.world_model
+        if wm is None or not wm.HasField("self"):
+            logger.warning("Malformed State: missing world_model.self")
+            return pb2.PlayerActions()
+        unum = wm.self.id
         # 存储该球员的状态
         with self._lock:
             self._states[unum] = request
@@ -585,14 +589,26 @@ class GameServicer(service_pb2_grpc.GameServicer):
 def _wait_for_states(self, timeout: float = 30.0):
     """等待所有训练 agent 的 sidecar 发送状态"""
     for unum in self._training_unums:
-        event = self._servicer._state_events.get(unum)
-        if event is None:
-            raise RuntimeError(f"Player unum={unum} not registered")
-        if not event.wait(timeout=timeout):
+        if not self._servicer.wait_for_state(unum, timeout=timeout):
             raise TimeoutError(
                 f"Timeout waiting for state from player unum={unum}"
             )
-        event.clear()
+```
+
+对应 `GameServicer` 需要暴露一个公共方法：
+
+```python
+class GameServicer:
+    # ...
+    def wait_for_state(self, unum: int, timeout: float = 30.0) -> bool:
+        """等待指定球员的状态到达，返回是否成功"""
+        event = self._state_events.get(unum)
+        if event is None:
+            raise RuntimeError(f"Player unum={unum} not registered")
+        result = event.wait(timeout=timeout)
+        if result:
+            event.clear()
+        return result
 ```
 
 ## 6. PlayerConfig 与 RoomRequest 改进
@@ -709,12 +725,14 @@ def close(self):
 Ray/RLlib 的 `num_env_runners` 和 `num_envs_per_runner` 会创建多个 `RCSSEnv` 实例。每个实例只需一个 gRPC 端口（而非 N 个），因此端口分配大幅简化：
 
 ```python
+MAX_ENVS_PER_WORKER = 10  # 每个 worker 最多的向量化环境数
+
 def __init__(self, config):
     # 使用 worker_index 和 vector_index 分配唯一端口
     worker_index = config.get("worker_index", 0)
     vector_index = config.get("vector_index", 0)
     # 每个 env 实例只需 1 个端口
-    self._grpc_port = self._cfg.grpc_port + worker_index * 10 + vector_index
+    self._grpc_port = self._cfg.grpc_port + worker_index * MAX_ENVS_PER_WORKER + vector_index
 ```
 
 ### 8.2 Agent ID 策略映射
