@@ -36,7 +36,7 @@
                                │                 │
               ┌────────────────▼──────┐  ┌───────▼───────────────┐
               │   rcss_cluster        │  │ SoccerSimulationProxy │
-              │   Allocator (K8s)     │  │ (Sidecar)             │
+              │   Allocator (K8s)     │  │ (Sidecar × N)         │
               │                       │  │                       │
               │  管理模拟房间的          │  │  每个 timestep:        │
               │  创建/分配/销毁         │  │  State ──▶ gRPC       │
@@ -52,20 +52,23 @@
 
 ## 3. 核心交互流程
 
-### 3.1 多智能体 gRPC 架构
+### 3.1 单 gRPC 服务器多智能体架构
 
-**关键理解**：在 rcss 中，每个训练 agent（球员）对应一个独立的 SoccerSimulationProxy sidecar 实例。每个 sidecar 需要连接到一个独立的 gRPC 服务器端口。因此：
+**关键理解**：每个训练 agent（球员）对应一个独立的 SoccerSimulationProxy sidecar 实例，但所有 sidecar 可以连接到**同一个 gRPC 服务器端口**。原因是 `GetPlayerActions` 接收的 `request: pb2.State` 中包含了球员的身份信息——通过 `request.world_model.self` 可以获取当前请求对应的球员，例如 `request.world_model.self.id` 即为球员的 uniform number。
 
-- **每个训练 agent 需要一个独立的 `GameServicer` 实例和一个独立的 gRPC 端口**
-- 如果配置了 N 个训练 agent，`RCSSEnv` 需要启动 N 个 gRPC 服务器
-- 配置房间时，需要在 `template.json` 中为每个训练 agent 提供对应的 gRPC 地址和端口
+因此：
+
+- **每个环境实例只需启动一个 gRPC 服务器**，该服务器内的 `GameServicer` 根据请求中的球员身份（unum）进行分发
+- 所有训练 agent 的 sidecar 共享同一个 gRPC 地址和端口
+- `GameServicer` 内部维护**按 unum 索引**的状态缓冲区和动作缓冲区
 
 ```
 RCSSEnv
-  ├── GameServicer[0] (port=50051) ◀──▶ Sidecar[0] (player unum=2)
-  ├── GameServicer[1] (port=50052) ◀──▶ Sidecar[1] (player unum=3)
-  ├── GameServicer[2] (port=50053) ◀──▶ Sidecar[2] (player unum=7)
-  └── ...
+  └── GameServicer (port=50051)
+        ├── state_buffers[unum=2]  ◀──  Sidecar[0] (player unum=2)
+        ├── state_buffers[unum=3]  ◀──  Sidecar[1] (player unum=3)
+        └── state_buffers[unum=7]  ◀──  Sidecar[2] (player unum=7)
+        (所有 sidecar 连同一端口，靠 world_model.self.id 区分球员)
 ```
 
 ### 3.2 完整生命周期
@@ -75,20 +78,20 @@ reset()                                         step()
   │                                               │
   ▼                                               ▼
 ┌──────────────────────┐                  ┌──────────────────────┐
-│ 1. 为每个训练agent    │                  │ 1. 等待所有 servicer  │
-│    启动gRPC服务器     │                  │    收到新 State       │
-│    (GameServicer)    │                  │    (state_ready.wait) │
+│ 1. 启动一个 gRPC     │                  │ 1. 等待 servicer 收到 │
+│    服务器             │                  │    所有训练agent的State│
+│    (GameServicer)    │                  │    (per-unum events)  │
 │                      │                  │                       │
 │ 2. 构建 RoomRequest  │                  │ 2. 从各 WorldModel    │
-│    (含gRPC地址列表)   │                  │    提取观测            │
+│    (含统一gRPC地址)   │                  │    提取观测            │
 │                      │                  │    (observation)       │
 │ 3. AllocatorClient   │                  │                       │
 │    .request_room()   │                  │ 3. 返回 obs 给 RLlib  │
 │    → 获得 room_id    │                  │    RL产出 action_dict  │
 │                      │                  │                       │
-│ 4. 等待 sidecar 初始 │                  │ 4. 将 action 转换为   │
-│    化完成 (首个State) │                  │    PlayerActions 并   │
-│                      │                  │    写入各 servicer     │
+│ 4. 等待所有agent的    │                  │ 4. 将 action 按 unum  │
+│    sidecar发来首State │                  │    转换为 PlayerActions│
+│                      │                  │    写入 servicer       │
 │ 5. 提取初始观测       │                  │    (set_actions)       │
 │    返回 obs, info    │                  │                       │
 └──────────────────────┘                  │ 5. Sidecar 接收并     │
@@ -100,8 +103,7 @@ close()                                   │                       │
 │ 1. AllocatorClient   │                  └──────────────────────┘
 │    .release_room()   │
 │                      │
-│ 2. 停止所有 gRPC     │
-│    服务器            │
+│ 2. 停止 gRPC 服务器  │
 │                      │
 │ 3. 清理状态          │
 └──────────────────────┘
@@ -124,7 +126,7 @@ class EnvConfig:
     mode: str = "local"                       # "local" | "remote"
     allocator_url: str = ""                   # allocator REST endpoint
     grpc_host: str = "0.0.0.0"               # gRPC 服务监听地址
-    grpc_base_port: int = 50051              # 第一个 gRPC 端口 (递增分配)
+    grpc_port: int = 50051                   # gRPC 服务端口 (每个 env 实例一个)
     grpc_advertise_host: str = "localhost"   # 告知 sidecar 的回连地址
 
     # --- 新增：队伍构成 ---
@@ -156,9 +158,9 @@ class RCSSEnv(gymnasium.Env):
 
     def _setup_remote(self):
         """初始化远程模式所需的组件"""
-        # 为每个训练 agent 创建一个 GameServicer
-        self._servicers: dict[str, GameServicer] = {}
-        self._grpc_servers: list[grpc.Server] = []
+        # 单个 GameServicer 处理所有训练 agent
+        self._servicer = GameServicer()
+        self._grpc_server: grpc.Server | None = None
         self._allocator = AllocatorClient(self._cfg.allocator_url)
         self._room_id: str | None = None
 
@@ -171,18 +173,18 @@ class RCSSEnv(gymnasium.Env):
         # 1. 如果有旧房间，先释放
         self._cleanup_room()
 
-        # 2. 启动 gRPC 服务器
-        self._start_grpc_servers()
+        # 2. 启动单个 gRPC 服务器
+        self._start_grpc_server()
 
         # 3. 构建 RoomRequest 并请求房间
         room_request = self._build_room_request()
         response = self._allocator.request_room(room_request)
         self._room_id = response["room_id"]
 
-        # 4. 等待所有 sidecar 完成初始化 (首次收到 State)
+        # 4. 等待所有训练 agent 的 sidecar 发来首个 State
         self._wait_for_initial_states()
 
-        # 5. 从各 servicer 提取初始观测
+        # 5. 从 servicer 中按 unum 提取各 agent 的初始观测
         return self._collect_observations(), self._collect_infos()
 
     def step(self, action_dict):
@@ -191,13 +193,13 @@ class RCSSEnv(gymnasium.Env):
         return self._step_local(action_dict)
 
     def _step_remote(self, action_dict):
-        # 1. 将 action_dict 转换为 PlayerActions 并发送给各 servicer
+        # 1. 将 action_dict 按 unum 转换为 PlayerActions，写入 servicer
         for agent_id, action in action_dict.items():
-            servicer = self._servicers[agent_id]
+            unum = self._agent_id_to_unum(agent_id)
             player_actions = self._action_to_proto(action)
-            servicer.set_actions(player_actions)
+            self._servicer.set_actions(unum, player_actions)
 
-        # 2. 等待所有 servicer 收到下一个 State
+        # 2. 等待所有训练 agent 的 sidecar 发来下一个 State
         self._wait_for_states()
 
         # 3. 提取观测、奖励、终止条件
@@ -211,35 +213,34 @@ class RCSSEnv(gymnasium.Env):
     def close(self):
         if self._cfg.mode == "remote":
             self._cleanup_room()
-            self._stop_grpc_servers()
+            self._stop_grpc_server()
 ```
 
 ### 4.3 gRPC 服务器管理
 
+每个 `RCSSEnv` 实例只需管理**一个 gRPC 服务器**。`GameServicer` 内部根据 `request.world_model.self.id`（即 unum）区分不同球员的请求。
+
 ```python
-def _start_grpc_servers(self):
-    """为每个训练 agent 启动独立的 gRPC 服务器"""
-    port = self._cfg.grpc_base_port
+def _start_grpc_server(self):
+    """启动单个 gRPC 服务器，服务所有训练 agent"""
+    self._servicer = GameServicer()
+    self._grpc_server = serve(
+        self._servicer,
+        port=self._cfg.grpc_port,
+        block=False,
+    )
 
-    for agent_id in self._training_agent_ids:
-        servicer = GameServicer()
-        server = serve(servicer, port=port, block=False)
-        self._servicers[agent_id] = servicer
-        self._grpc_servers.append(server)
-        self._agent_port_map[agent_id] = port
-        port += 1
-
-def _stop_grpc_servers(self):
-    """停止所有 gRPC 服务器"""
-    for server in self._grpc_servers:
-        server.stop(grace=5)
-    self._grpc_servers.clear()
-    self._servicers.clear()
+def _stop_grpc_server(self):
+    """停止 gRPC 服务器"""
+    if self._grpc_server is not None:
+        self._grpc_server.stop(grace=5)
+        self._grpc_server = None
 ```
 
 ### 4.4 RoomRequest 构建
 
-`RoomRequest` 需要根据环境配置生成符合 `template.json` 格式的请求：
+`RoomRequest` 需要根据环境配置生成符合 `template.json` 格式的请求。
+由于所有训练 agent 共享同一个 gRPC 服务器，所有 `kind: "agent"` 的球员使用相同的 `grpc_host` 和 `grpc_port`：
 
 ```python
 def _build_room_request(self) -> RoomRequest:
@@ -250,14 +251,11 @@ def _build_room_request(self) -> RoomRequest:
     # 左方队伍
     for unum in range(1, self._cfg.num_left + 1):
         if unum in self._cfg.left_agents:
-            # 训练 agent — 需要 gRPC 配置
-            agent_id = self._unum_to_agent_id("left", unum)
+            # 训练 agent — 所有 agent 共享同一 gRPC 地址
             left_players.append(PlayerConfig(
                 unum=unum,
                 goalie=(unum == 1),
                 policy_kind="agent",
-                grpc_host=self._cfg.grpc_advertise_host,
-                grpc_port=self._agent_port_map[agent_id],
             ))
         else:
             # Bot 球员
@@ -276,22 +274,25 @@ def _build_room_request(self) -> RoomRequest:
         ally_players=left_players,
         opponent_players=right_players,
         time_up=self._cfg.time_up,
-        # 注：每个 agent 的 grpc_host/port 已在上方的 PlayerConfig 中
-        # 按 _agent_port_map 逐个设置，此处字段仅作为全局默认值
+        # 所有训练 agent 共享同一 gRPC 地址和端口
         grpc_host=self._cfg.grpc_advertise_host,
-        grpc_port=self._cfg.grpc_base_port,
+        grpc_port=self._cfg.grpc_port,
     )
 ```
 
 ### 4.5 template.json 配置映射
 
-allocator 期望的 `template.json` 结构（推测）：
+allocator 期望的 `template.json` 结构（推测）。注意所有训练 agent 指向同一个 gRPC 地址，sidecar 通过该地址连接到训练端的单一 gRPC 服务器：
 
 ```json
 {
   "api_version": 1,
   "stopping": {
     "time_up": 6000
+  },
+  "grpc": {
+    "host": "10.0.0.5",
+    "port": 50051
   },
   "teams": {
     "allies": {
@@ -305,18 +306,12 @@ allocator 期望的 `template.json` 结构（推测）：
         {
           "unum": 2,
           "goalie": false,
-          "policy": {
-            "kind": "agent",
-            "grpc": { "host": "10.0.0.5", "port": 50051 }
-          }
+          "policy": { "kind": "agent" }
         },
         {
           "unum": 3,
           "goalie": false,
-          "policy": {
-            "kind": "agent",
-            "grpc": { "host": "10.0.0.5", "port": 50052 }
-          }
+          "policy": { "kind": "agent" }
         }
       ]
     },
@@ -334,7 +329,7 @@ allocator 期望的 `template.json` 结构（推测）：
 }
 ```
 
-**关键点**：每个 `kind: "agent"` 的球员需要附带 `grpc.host` 和 `grpc.port`，告知 sidecar 应该连接到哪里。因此 `RoomRequest.to_dict()` 需要更新以支持每个 agent 的 gRPC 配置。
+**关键点**：`grpc` 配置位于顶层，所有 `kind: "agent"` 的球员共享该地址。`GameServicer` 在收到 `GetPlayerActions` 请求时，通过 `request.world_model.self.id`（unum）识别是哪位球员的请求，从而分发到对应的状态/动作缓冲区。
 
 ### 4.6 Agent ID 映射
 
@@ -488,14 +483,16 @@ def _check_done(self) -> tuple[dict[str, bool], dict[str, bool]]:
     terminateds = {}
     truncateds = {}
 
-    # 从任一 servicer 获取世界模型
-    wm = next(iter(self._servicers.values())).get_world_model()
+    # 从 servicer 中任一已注册球员获取世界模型
+    first_unum = next(iter(self._training_unums))
+    state = self._servicer.get_state(first_unum)
+    wm = state.world_model if state else None
 
     # 比赛结束 (game_mode_type == TimeOver)
-    game_over = (wm.game_mode_type == pb2.TimeOver)
+    game_over = (wm is not None and wm.game_mode_type == pb2.TimeOver)
 
     # 或达到最大步数
-    truncated = (wm.cycle >= self._cfg.max_episode_steps)
+    truncated = (wm is not None and wm.cycle >= self._cfg.max_episode_steps)
 
     for agent_id in self._training_agent_ids:
         terminateds[agent_id] = game_over
@@ -509,44 +506,100 @@ def _check_done(self) -> tuple[dict[str, bool], dict[str, bool]]:
 
 ## 5. 同步机制
 
-### 5.1 单步同步时序
+### 5.1 GameServicer 多球员分发
+
+`GameServicer` 内部维护按 unum 索引的缓冲区。当不同球员的 sidecar 并发调用 `GetPlayerActions` 时，servicer 根据 `request.world_model.self.id` 分发到对应的缓冲区槽位：
+
+```python
+class GameServicer(service_pb2_grpc.GameServicer):
+    def __init__(self) -> None:
+        # 按 unum 索引的 per-player 状态和事件
+        self._states: dict[int, pb2.State] = {}         # unum → latest State
+        self._actions: dict[int, pb2.PlayerActions] = {} # unum → pending Actions
+        self._state_events: dict[int, threading.Event] = {}   # unum → state_ready
+        self._action_events: dict[int, threading.Event] = {}  # unum → action_ready
+        self._lock = threading.Lock()
+
+    def register_player(self, unum: int) -> None:
+        """注册一个训练 agent（在 reset 时调用）"""
+        self._state_events[unum] = threading.Event()
+        self._action_events[unum] = threading.Event()
+
+    def GetPlayerActions(self, request: pb2.State, context) -> pb2.PlayerActions:
+        unum = request.world_model.self.id
+        # 存储该球员的状态
+        with self._lock:
+            self._states[unum] = request
+        # 通知 RCSSEnv: 此球员的状态已到达
+        self._state_events[unum].set()
+
+        # 等待 RCSSEnv 写入此球员的动作
+        self._action_events[unum].wait()
+        self._action_events[unum].clear()
+
+        with self._lock:
+            actions = self._actions.pop(unum, None)
+        return actions if actions is not None else pb2.PlayerActions()
+
+    def get_state(self, unum: int) -> pb2.State | None:
+        with self._lock:
+            return self._states.get(unum)
+
+    def set_actions(self, unum: int, actions: pb2.PlayerActions) -> None:
+        with self._lock:
+            self._actions[unum] = actions
+        self._action_events[unum].set()
+```
+
+### 5.2 单步同步时序
+
+所有 sidecar 连接到同一个 gRPC 端口，`GameServicer` 通过 unum 分发：
 
 ```
-           Sidecar[0]        GameServicer[0]       RCSSEnv         GameServicer[1]        Sidecar[1]
-              │                    │                    │                   │                    │
-              │  GetPlayerActions  │                    │                   │  GetPlayerActions  │
-              │───────────────────▶│                    │                   │◀──────────────────│
-              │                    │  state_ready.set() │                   │  state_ready.set() │
-              │                    │───────────────────▶│◀──────────────────│                    │
-              │                    │                    │                   │                    │
-              │                    │         (等待所有 state_ready)          │                    │
-              │                    │                    │                   │                    │
-              │                    │         (提取 obs, 交给 RL)            │                    │
-              │                    │         (RL 产出 actions)             │                    │
-              │                    │                    │                   │                    │
-              │                    │  action_ready.set()│  action_ready.set()                   │
-              │                    │◀───────────────────│──────────────────▶│                    │
-              │  PlayerActions     │                    │                   │   PlayerActions    │
-              │◀───────────────────│                    │                   │──────────────────▶│
-              │                    │                    │                   │                    │
+   Sidecar[unum=2]       Sidecar[unum=3]         GameServicer          RCSSEnv
+        │                      │                      │                    │
+        │  GetPlayerActions    │  GetPlayerActions     │                    │
+        │─────────────────────▶│─────────────────────▶│                    │
+        │  (wm.self.id=2)      │  (wm.self.id=3)      │                    │
+        │                      │                      │  state_events[2].set()
+        │                      │                      │  state_events[3].set()
+        │                      │                      │──────────────────▶│
+        │                      │                      │                    │
+        │                      │                      │  (等待所有 unum 的  │
+        │                      │                      │   state_events)    │
+        │                      │                      │                    │
+        │                      │                      │  (提取 obs, 交 RL)  │
+        │                      │                      │  (RL 产出 actions)  │
+        │                      │                      │                    │
+        │                      │                      │  set_actions(2,...)│
+        │                      │                      │  set_actions(3,...)│
+        │                      │                      │◀──────────────────│
+        │  PlayerActions       │  PlayerActions       │                    │
+        │◀─────────────────────│◀─────────────────────│                    │
+        │                      │                      │                    │
 ```
 
-### 5.2 状态同步等待
+### 5.3 状态同步等待
 
 ```python
 def _wait_for_states(self, timeout: float = 30.0):
     """等待所有训练 agent 的 sidecar 发送状态"""
-    for agent_id, servicer in self._servicers.items():
-        if not servicer.state_ready.wait(timeout=timeout):
+    for unum in self._training_unums:
+        event = self._servicer._state_events.get(unum)
+        if event is None:
+            raise RuntimeError(f"Player unum={unum} not registered")
+        if not event.wait(timeout=timeout):
             raise TimeoutError(
-                f"Timeout waiting for state from agent {agent_id}"
+                f"Timeout waiting for state from player unum={unum}"
             )
-        servicer.state_ready.clear()
+        event.clear()
 ```
 
 ## 6. PlayerConfig 与 RoomRequest 改进
 
-### 6.1 PlayerConfig 需要支持 gRPC 配置
+### 6.1 PlayerConfig 不需要 gRPC 配置
+
+由于所有训练 agent 共享同一个 gRPC 服务器，`PlayerConfig` 不需要携带 per-player 的 gRPC 地址。gRPC 配置在 `RoomRequest` 级别统一指定：
 
 ```python
 @dataclass
@@ -555,11 +608,9 @@ class PlayerConfig:
     goalie: bool = False
     policy_kind: str = "agent"      # "bot" | "agent"
     policy_image: str | None = None  # Docker image for bot
-    grpc_host: str | None = None     # gRPC host for agent
-    grpc_port: int | None = None     # gRPC port for agent
 ```
 
-### 6.2 RoomRequest.to_dict() 需要包含 gRPC 信息
+### 6.2 RoomRequest.to_dict() 在顶层包含 gRPC 地址
 
 ```python
 def to_dict(self) -> dict:
@@ -567,17 +618,30 @@ def to_dict(self) -> dict:
         policy = {"kind": p.policy_kind}
         if p.policy_kind == "bot" and p.policy_image:
             policy["image"] = p.policy_image
-        if p.policy_kind == "agent" and p.grpc_host:
-            policy["grpc"] = {
-                "host": p.grpc_host,
-                "port": p.grpc_port,
-            }
         return {
             "unum": p.unum,
             "goalie": p.goalie,
             "policy": policy,
         }
-    # ...
+
+    return {
+        "api_version": 1,
+        "stopping": {"time_up": self.time_up},
+        "grpc": {
+            "host": self.grpc_host,
+            "port": self.grpc_port,
+        },
+        "teams": {
+            "allies": {
+                "name": self.ally_name,
+                "players": [_player(p) for p in self.ally_players],
+            },
+            "opponents": {
+                "name": self.opponent_name,
+                "players": [_player(p) for p in self.opponent_players],
+            },
+        },
+    }
 ```
 
 ## 7. 错误处理与鲁棒性
@@ -587,19 +651,19 @@ def to_dict(self) -> dict:
 ```python
 # 在 GameServicer.GetPlayerActions 中添加超时
 def GetPlayerActions(self, request, context):
+    unum = request.world_model.self.id
     with self._lock:
-        self._current_state = request
-    self.state_ready.set()
+        self._states[unum] = request
+    self._state_events[unum].set()
 
     # 添加超时保护
-    if not self.action_ready.wait(timeout=30.0):
-        logger.warning("Timeout waiting for actions, returning empty")
+    if not self._action_events[unum].wait(timeout=30.0):
+        logger.warning("Timeout waiting for actions for unum=%d, returning empty", unum)
         return pb2.PlayerActions()
 
-    self.action_ready.clear()
+    self._action_events[unum].clear()
     with self._lock:
-        actions = self._current_actions
-        self._current_actions = None
+        actions = self._actions.pop(unum, None)
     return actions if actions is not None else pb2.PlayerActions()
 ```
 
@@ -621,9 +685,10 @@ def _reset_remote(self, **kwargs):
 def close(self):
     """确保资源被正确释放"""
     if self._cfg.mode == "remote":
-        # 先解除所有阻塞的 servicer
-        for servicer in self._servicers.values():
-            servicer.set_actions(pb2.PlayerActions())  # 解除阻塞
+        # 先解除所有阻塞的 action_events
+        if self._servicer is not None:
+            for unum in self._training_unums:
+                self._servicer.set_actions(unum, pb2.PlayerActions())
 
         # 释放房间
         if self._room_id:
@@ -634,28 +699,22 @@ def close(self):
             self._room_id = None
 
         # 停止 gRPC 服务器
-        self._stop_grpc_servers()
+        self._stop_grpc_server()
 ```
 
 ## 8. 与 Ray/RLlib 的集成
 
 ### 8.1 多环境并行
 
-Ray/RLlib 的 `num_env_runners` 和 `num_envs_per_runner` 会创建多个 `RCSSEnv` 实例。每个实例需要：
-- 独立的 gRPC 端口范围（避免冲突）
-- 独立的模拟房间
+Ray/RLlib 的 `num_env_runners` 和 `num_envs_per_runner` 会创建多个 `RCSSEnv` 实例。每个实例只需一个 gRPC 端口（而非 N 个），因此端口分配大幅简化：
 
 ```python
-# 每个 (worker, vector_env) 组合需要 n_agents 个端口。
-# PORT_BLOCK_SIZE 定义每个 env 实例保留的端口数量（应 >= 最大训练 agent 数）。
-PORT_BLOCK_SIZE = 100  # 保留 100 个端口 per env 实例，允许最多 100 个训练 agent
-
 def __init__(self, config):
-    # 使用 worker_index 和 vector_index 来避免端口冲突
+    # 使用 worker_index 和 vector_index 分配唯一端口
     worker_index = config.get("worker_index", 0)
     vector_index = config.get("vector_index", 0)
-    n_agents = len(self._training_agent_ids)
-    base_port = self._cfg.grpc_base_port + (worker_index * PORT_BLOCK_SIZE + vector_index) * n_agents
+    # 每个 env 实例只需 1 个端口
+    self._grpc_port = self._cfg.grpc_port + worker_index * 10 + vector_index
 ```
 
 ### 8.2 Agent ID 策略映射
