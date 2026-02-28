@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import pytest
 
-from rcss_rl.config import EnvConfig, TrainConfig
+from rcss_rl.config import EnvConfig, PlayerConfig, TrainConfig
 from rcss_rl.train import _parse_args, build_algo
 
 
@@ -17,11 +17,19 @@ class TestEnvConfig:
         assert cfg.max_episode_steps == 200
         assert cfg.seed is None
 
-    def test_asdict_round_trip(self) -> None:
-        cfg = EnvConfig(num_left=5, num_right=5, seed=1)
-        d = dataclasses.asdict(cfg)
-        restored = EnvConfig(**d)
-        assert restored == cfg
+    def test_num_left_right_derived(self) -> None:
+        cfg = EnvConfig(
+            ally_players=[
+                PlayerConfig(unum=i, goalie=(i == 1))
+                for i in range(1, 6)
+            ],
+            opponent_players=[
+                PlayerConfig(unum=i, goalie=(i == 1))
+                for i in range(1, 3)
+            ],
+        )
+        assert cfg.num_left == 5
+        assert cfg.num_right == 2
 
 
 class TestTrainConfig:

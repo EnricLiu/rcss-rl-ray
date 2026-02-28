@@ -33,7 +33,7 @@ from ray.rllib.algorithms.impala import ImpalaConfig
 from ray.rllib.policy.policy import PolicySpec
 
 from rcss_rl.callbacks import RCSSCallbacks
-from rcss_rl.config import EnvConfig, TrainConfig
+from rcss_rl.config import EnvConfig, PlayerConfig, TrainConfig
 from rcss_rl.env.rcss_env import RCSSEnv
 from rcss_rl.models.fcnet import register as register_model
 
@@ -170,8 +170,14 @@ def _parse_args(argv: list[str] | None = None) -> TrainConfig:
     args = parser.parse_args(argv)
 
     env_cfg = EnvConfig(
-        num_left=args.num_left,
-        num_right=args.num_right,
+        ally_players=[
+            PlayerConfig(unum=i, goalie=(i == 1), policy_kind="agent")
+            for i in range(1, args.num_left + 1)
+        ],
+        opponent_players=[
+            PlayerConfig(unum=i, goalie=(i == 1), policy_kind="bot")
+            for i in range(1, args.num_right + 1)
+        ],
         max_episode_steps=args.max_episode_steps,
         seed=args.seed,
     )
