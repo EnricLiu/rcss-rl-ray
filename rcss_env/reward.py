@@ -1,8 +1,8 @@
 from grpc_srv import pb2
 
 def calculate(
-    prev_obs: pb2.WorldModel,
-    prev_truth: pb2.WorldModel,
+    prev_obs: pb2.WorldModel | None,
+    prev_truth: pb2.WorldModel | None,
     curr_obs: pb2.WorldModel,
     curr_truth: pb2.WorldModel,
 ) -> float:

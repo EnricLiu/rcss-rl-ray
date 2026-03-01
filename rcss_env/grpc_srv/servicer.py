@@ -256,7 +256,7 @@ class GameServicer(pb2_grpc.GameServicer):
 
     # ---- Async interface for the training loop ----------------------------
 
-    async def __get_states(self, timeout: float) -> dict[int, pb2.State]:
+    async def __fetch_states(self, timeout: float) -> dict[int, pb2.State]:
         """Await until *unum*'s state arrives.  Returns *True* on success.
 
         The received state is cached internally so that subsequent calls
@@ -330,7 +330,7 @@ class GameServicer(pb2_grpc.GameServicer):
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=timeout)
 
-    def get_states(
+    def fetch_states(
         self, timeout: float = STATE_GET_TIMEOUT_S
     ) -> dict[int, pb2.State]:
         """Block until all registered agents' states arrive.
@@ -339,7 +339,7 @@ class GameServicer(pb2_grpc.GameServicer):
         Thread-safe synchronous wrapper around :meth:`__get_states`.
         """
         return self.__run_coro(
-            self.__get_states(timeout=timeout),
+            self.__fetch_states(timeout=timeout),
             timeout=timeout+0.5,
         )
 

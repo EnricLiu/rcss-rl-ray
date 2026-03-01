@@ -122,6 +122,8 @@ class RCSSEnv(gymnasium.Env):
 
         self._prev_world_models: dict[int, Any] = {}
 
+        self.__prev_states: dict[int, pb2.State] = {}
+
         self._setup()
 
     @property
@@ -146,12 +148,6 @@ class RCSSEnv(gymnasium.Env):
         """Return the side string (``"left"`` or ``"right"``) for the agent team."""
         return "left" if self.agent_team.side == TeamSide.LEFT else "right"
 
-    @property
-    def _agent_id_list(self) -> list[str]:
-        """Sorted list of agent IDs, e.g. ``["left_2", "left_7"]``."""
-        side = self._agent_side
-        return [f"{side}_{unum}" for unum in sorted(self.agent_team_unums)]
-
     # ------------------------------------------------------------------
     # Gymnasium API
     # ------------------------------------------------------------------
@@ -161,7 +157,7 @@ class RCSSEnv(gymnasium.Env):
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, np.ndarray], dict[str, dict[str, Any]]]:
+    ) -> tuple[dict[int, np.ndarray], dict[int, dict[str, Any]]]:
         """Reset the environment and return initial observations."""
         # 1. Clean up any previous room.
         self._cleanup_room()
@@ -188,52 +184,51 @@ class RCSSEnv(gymnasium.Env):
         self.__room = room_id
 
         # 5. Wait for all training agents' sidecars to send initial state.
-        self._wait_for_all_states()
+        states = self.__collect_states()
 
         # 6. Collect initial observations and infos.
         self._step_count = 0
-        self._prev_world_models = self._collect_world_models()
-        obs = self._collect_observations()
-        infos: dict[str, dict[str, Any]] = {aid: {} for aid in self._agent_id_list}
+        self._prev_world_models = {}
+        obs = self.__states_to_obs(states)
+        infos: dict[int, dict[str, Any]] = {unum: {} for unum in self.agent_team_unums}
         return obs, infos
 
     def step(
         self,
         action_dict: dict[str, int],
     ) -> tuple[
-        dict[str, np.ndarray],
-        dict[str, float],
-        dict[str, bool],
-        dict[str, bool],
-        dict[str, dict[str, Any]],
+        dict[int, np.ndarray],
+        dict[int, float],
+        dict[int, bool],
+        dict[int, bool],
+        dict[int, dict[str, Any]],
     ]:
         """Execute one simulation step: send actions, wait for next states."""
         self._step_count += 1
 
         # 1. Build proto actions for every agent and send as a batch.
         proto_actions: dict[int, Any] = {}
-        for agent_id in self._agent_id_list:
-            _, unum = self._parse_agent_id(agent_id)
-            action = action_dict.get(agent_id, NOOP)
+        for unum in self.agent_team_unums:
+            action = action_dict.get(unum, NOOP)
             proto_actions[unum] = self._action_to_proto(action)
 
         self.__servicer.send_actions(proto_actions)
 
-        # 2. Wait for next states from all training agents.
-        self._wait_for_all_states()
 
         # 3. Collect observations, rewards, termination, truncation.
-        prev_wms = self._prev_world_models
-        curr_wms = self._collect_world_models()
-        self._prev_world_models = curr_wms
+        prev_states = self._prev_world_models
+        curr_states = self.__collect_states()
+        self.__prev_states = curr_states
 
-        obs = self._collect_observations()
+        obs = self.__states_to_obs(curr_states)
         rewards = {
-            aid: self._calc_reward(aid, prev_wms, curr_wms)
-            for aid in self._agent_id_list
+            unum: self.__calc_reward(unum, prev_states.get(unum), curr_states.get(unum))
+            for unum in self.agent_team_unums
         }
-        terminateds, truncateds = self._check_done(curr_wms)
-        infos = self._collect_infos(curr_wms)
+
+        curr_wms = {unum: state.world_model for unum, state in curr_states.items()}
+        terminateds, truncateds = self.__check_done(curr_wms)
+        infos = self.__collect_infos(curr_wms)
 
         return obs, rewards, terminateds, truncateds, infos
 
@@ -291,39 +286,31 @@ class RCSSEnv(gymnasium.Env):
     # State / observation helpers
     # ------------------------------------------------------------------
 
-    def _wait_for_all_states(self, timeout: float = 30.0) -> None:
-        """Wait for every registered training agent to send a state (batch)."""
-        states = self.__servicer.get_states(timeout=timeout)
-        if states is None:
-            raise TimeoutError("Timeout waiting for states from all agents")
-        # Verify that every expected unum is present.
-        missing = self.agent_team_unums - set(states.keys())
-        if missing:
-            raise TimeoutError(
-                f"Timeout waiting for states from unums: {missing}"
-            )
+    def __prev_state(self, unum: int) -> pb2.State | None:
+        """Return the last received state for a given agent unum."""
+        return self.__prev_states.get(unum)
 
-    def _collect_world_models(self) -> dict[int, pb2.WorldModel]:
+    def __prev_obs_wm(self, unum: int) -> pb2.WorldModel | None:
+        """Return the world model from the last received state for a given agent unum."""
+        if (prev_state := self.__prev_state(unum)) is None: return None
+        return prev_state.world_model
+
+    def __prev_truth_wm(self, unum: int) -> pb2.WorldModel | None:
+        """Return the world model from the last received state for a given agent unum, with truth info."""
+        if (prev_state := self.__prev_state(unum)) is None: return None
+        return prev_state.full_world_model
+
+
+    def __collect_states(self, timeout_s: float = 30.0) -> dict[int, pb2.State]:
         """Return the latest world model for each agent unum."""
-        wms: dict[int, pb2.WorldModel] = {}
-        for unum in self.agent_team_unums:
-            state = self.__servicer.last_state(unum)
-            if state is not None:
-                wms[unum] = state.world_model
-        return wms
-
-    def _collect_observations(self) -> dict[str, np.ndarray]:
-        """Build observation vectors from world models for all training agents."""
-        obs: dict[str, np.ndarray] = {}
-        for agent_id in self._agent_id_list:
-            _, unum = self._parse_agent_id(agent_id)
-            state = self.__servicer.last_state(unum)
-            if state is not None:
-                obs[agent_id] = observation.extract(state.world_model)
-            else:
-                obs[agent_id] = np.zeros(self.obs_dim, dtype=np.float32)
-        return obs
-
+        try:
+            states = self.__servicer.fetch_states(timeout=timeout_s)
+            return states
+        except Exception as exc:
+            logger.warning("Timeout fetching states for world models: %s", exc)
+            raise gymnasium.error.ResetNeeded(
+                "Failed to fetch states for world models, likely due to a communication issue with the simulation. "
+            )
 
     @staticmethod
     def _action_to_proto(action: int) -> Any:
@@ -359,31 +346,47 @@ class RCSSEnv(gymnasium.Env):
 
         return pa
 
+    @staticmethod
+    def __states_to_obs(states: dict[int, pb2.State]) -> dict[int, np.ndarray]:
+        obs = {
+            unum: observation.extract(s.world_model).astype(np.float32)
+            for unum, s in states.items()
+        }
+        return obs
 
-    def _calc_reward(
-        self,
-        agent_id: str,
-        prev_wms: dict[int, pb2.WorldModel],
-        curr_wms: dict[int, pb2.WorldModel],
+    @staticmethod
+    def __calc_reward(
+        unum: int,
+        prev_states: pb2.State | None,
+        curr_states: pb2.State,
     ) -> float:
         """Compute reward for *agent_id* from consecutive world models."""
-        _, unum = self._parse_agent_id(agent_id)
-        prev_wm = prev_wms.get(unum)
-        curr_wm = curr_wms.get(unum)
-        if prev_wm is None or curr_wm is None:
-            return 0.0
+
+        prev_obs = None
+        prev_truth = None
+        if prev_states is not None:
+            prev_obs = prev_states.world_model
+            prev_truth = prev_states.full_world_model
+
+        if curr_states is None:
+            logger.warning(f"Current state for unum={unum} is missing; cannot compute reward. ")
+            return 0.0  # No current state → zero reward (could also raise an error)
+
+        curr_obs = curr_states.world_model
+        curr_truth = curr_states.full_world_model
 
         ret = reward.calculate(
-            prev_obs=prev_wm,
-            curr_obs=curr_wm,
-            prev_truth=None,
-            curr_truth=None,
+            prev_obs,
+            curr_obs,
+            prev_truth,
+            curr_truth,
         )
         return ret
 
-    def _check_done(
+
+    def __check_done(
         self, curr_wms: dict[int, pb2.WorldModel],
-    ) -> tuple[dict[str, bool], dict[str, bool]]:
+    ) -> tuple[dict[int, bool], dict[int, bool]]:
         """Determine termination/truncation from world models."""
 
         # Use the first available world model.
@@ -392,25 +395,24 @@ class RCSSEnv(gymnasium.Env):
         game_over = wm is not None and wm.game_mode_type == pb2.TimeOver
         truncated = self._step_count >= self.room_schema.stopping.time_up
 
-        terminateds: dict[str, bool] = {aid: game_over for aid in self._agent_id_list}
+        terminateds: dict[int, bool] = {unum: game_over for unum in self.agent_team_unums}
         terminateds["__all__"] = game_over
 
-        truncateds: dict[str, bool] = {aid: truncated for aid in self._agent_id_list}
+        truncateds: dict[int, bool] = {unum: truncated for unum in self.agent_team_unums}
         truncateds["__all__"] = truncated
 
         return terminateds, truncateds
 
-    def _collect_infos(
+    def __collect_infos(
         self,
         curr_wms: dict[int, pb2.WorldModel],
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[int, dict[str, Any]]:
         """Build per-agent info dicts from world models."""
-        infos: dict[str, dict[str, Any]] = {}
-        for agent_id in self._agent_id_list:
-            _, unum = self._parse_agent_id(agent_id)
+        infos: dict[int, dict[str, Any]] = {}
+        for unum in self.agent_team_unums:
             wm = curr_wms.get(unum)
             if wm is not None:
-                infos[agent_id] = {
+                infos[unum] = {
                     "scores": {
                         "our": wm.our_team_score,
                         "their": wm.their_team_score,
@@ -419,7 +421,7 @@ class RCSSEnv(gymnasium.Env):
                     "cycle": wm.cycle,
                 }
             else:
-                infos[agent_id] = {"step": self._step_count}
+                infos[unum] = {"step": self._step_count}
         return infos
 
     # ------------------------------------------------------------------
@@ -431,8 +433,7 @@ class RCSSEnv(gymnasium.Env):
         """Observation dimension (124)."""
         return observation.dim()
 
-    @staticmethod
-    def _parse_agent_id(agent_id: str) -> tuple[str, int]:
-        """Parse ``"left_3"`` → ``("left", 3)``."""
-        side, unum_str = agent_id.split("_", 1)
-        return side, int(unum_str)
+    def __agent_name(self, unum: int) -> str:
+        """Convert a unum to an agent ID string, e.g. 7 → "agent_left_7"."""
+        side = self._agent_side
+        return f"agent_{side}_{unum}"
