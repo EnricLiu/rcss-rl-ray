@@ -1,12 +1,12 @@
 from dataclasses import dataclass, field
 
-from .team import TeamsConfig
-from .referee import RefereeConfig
+from .team import TeamsSchema
+from .referee import RefereeSchema
 from .position import Position
 
 
 @dataclass
-class EnvInitState:
+class RoomInitState:
     ball: Position = None
     timestep: int = 0
 
@@ -16,12 +16,14 @@ class EnvInitState:
 
 @dataclass
 class StoppingEvents:
-    time_up: int = None
+    time_up: int = 6000
     goal_limit_l: int = None
     goal_limit_r: int = None
 
+
+
 @dataclass
-class EnvConfig:
+class RoomSchema:
     """Parameters that control the RCSS environment.
 
     . _template.json:
@@ -33,13 +35,14 @@ class EnvConfig:
         Configuration for the left and right teams (players, policies, etc).
     referee : RefereeConfig
         Referee settings (e.g. whether to enable the referee or not).
-    init_state : EnvInitState
+    init_state : RoomInitState
         Optional initial state overrides for the environment (ball position, starting timestep).
     """
 
     # --- Team composition (mirrors template.json) ---
 
-    teams: TeamsConfig
-    referee: RefereeConfig = field(default_factory=RefereeConfig)
-    init_state: EnvInitState = None
+    teams: TeamsSchema
+    stopping: StoppingEvents = field(default_factory=StoppingEvents)
+    referee: RefereeSchema = field(default_factory=RefereeSchema)
+    init_state: RoomInitState = None
 

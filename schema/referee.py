@@ -2,5 +2,5 @@ from dataclasses import dataclass
 
 
 @dataclass
-class RefereeConfig:
+class RefereeSchema:
     enable: bool = False

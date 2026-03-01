@@ -22,7 +22,7 @@ class PlayerInitState:
     stamina: int = 8000
 
 @dataclass
-class PlayerConfig[PolicyType: Policy]:
+class PlayerSchema[PolicyType: Policy]:
     """Configuration for a single player in a match.
 
     Mirrors the per-player block in the *template.json* accepted by the

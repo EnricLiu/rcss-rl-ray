@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Generator, Any
 from dataclasses import dataclass
 
-from .player import PlayerConfig
+from .player import PlayerSchema
 from .policy import Policy, PolicyKind, PolicyAgentKind, BotPolicy, AgentPolicy, SspAgentPolicy
 
 class TeamSide(Enum):
@@ -10,10 +10,10 @@ class TeamSide(Enum):
     RIGHT = "right"
 
 @dataclass
-class TeamConfig:
+class TeamSchema:
     name: str
     side: TeamSide
-    players: list[PlayerConfig[Policy]]
+    players: list[PlayerSchema[Policy]]
 
     def __post_init__(self):
         if len(self.name) > 10:
@@ -23,32 +23,31 @@ class TeamConfig:
             raise ValueError("A team cannot have more than 11 players")
 
 
-    def agents(self) -> Generator[PlayerConfig[AgentPolicy], Any, None]:
+    def agents(self) -> Generator[PlayerSchema[AgentPolicy], Any, None]:
         for p in self.players:
             if p.policy.kind == PolicyKind.Agent:
                 if isinstance(p.policy, AgentPolicy):
-                    p: PlayerConfig[AgentPolicy]
+                    p: PlayerSchema[AgentPolicy]
                     yield p
                 else:
                     raise ValueError(f"Player {p.unum} has policy kind 'agent' but policy is not an AgentPolicy instance")
 
-    def ssp_agents(self) -> Generator[PlayerConfig[SspAgentPolicy], Any, list[Any]]:
+    def ssp_agents(self) -> Generator[PlayerSchema[SspAgentPolicy], Any, list[Any]]:
         ret = []
-
 
         for p in self.agents():
             if p.policy.agent == PolicyAgentKind.Ssp:
                 if isinstance(p.policy, SspAgentPolicy):
-                    p: PlayerConfig[SspAgentPolicy]
+                    p: PlayerSchema[SspAgentPolicy]
                     yield p
 
         return ret
 
-    def bots(self) -> Generator[PlayerConfig[BotPolicy], Any, None]:
+    def bots(self) -> Generator[PlayerSchema[BotPolicy], Any, None]:
         for p in self.players:
             if p.policy.kind == PolicyKind.Bot:
                 if isinstance(p.policy, BotPolicy):
-                    p: PlayerConfig[BotPolicy]
+                    p: PlayerSchema[BotPolicy]
                     yield p
                 else:
                     raise ValueError(
@@ -63,6 +62,29 @@ class TeamConfig:
             return False
 
 @dataclass
-class TeamsConfig:
-    left: TeamConfig
-    right: TeamConfig
+class TeamsSchema:
+    left: TeamSchema
+    right: TeamSchema
+
+    def __post_init__(self):
+        if self.left.side != TeamSide.LEFT:
+            raise ValueError("Left team must have side=TeamSide.LEFT")
+        if self.right.side != TeamSide.RIGHT:
+            raise ValueError("Right team must have side=TeamSide.RIGHT")
+
+        left_is_agentic = self.left.is_agentic()
+        right_is_agentic = self.right.is_agentic()
+
+        if left_is_agentic and right_is_agentic:
+            raise ValueError("Only one team can have agent-controlled players (for self-play training, use a single team with both agent and bot players)")
+
+        if not left_is_agentic and not right_is_agentic:
+            raise ValueError("At least one team must have agent-controlled players")
+
+        if left_is_agentic: self.__agent_team_side = TeamSide.LEFT
+        else: self.__agent_team_side = TeamSide.RIGHT
+
+
+    @property
+    def agent_team(self):
+        return self.left if self.__agent_team_side == TeamSide.LEFT else self.right
