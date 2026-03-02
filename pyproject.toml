@@ -14,12 +14,24 @@ dependencies = [
     "gymnasium>=1.0.0",
     "numpy>=1.24.0",
     "torch>=2.0.0",
+    "pytest>=9.0.2",
+    "grpcio>=1.78.0",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+]
+grpc = [
+    "grpcio>=1.78.0",
+    "grpcio-tools>=1.78.0",
+]
+remote = [
+    "grpcio>=1.78.0",
+    "grpcio-tools>=1.78.0",
+    "requests>=2.31.0",
 ]
 
 [project.scripts]
@@ -31,3 +43,14 @@ include = ["rcss_rl*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+
+[tool.uv.sources]
+torch = [
+    { index = "torch-cpu" },
+]
+
+[[tool.uv.index]]
+name = "torch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
