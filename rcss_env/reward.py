@@ -14,7 +14,11 @@ def calculate(
     rewards += float(score_diff)
     rewards -= float(opp_diff)
 
-    # Small distance-to-ball penalty to encourage engagement.
-    rewards -= 0.001 * curr_obs.self.dist_from_ball
+    ball_to_goal_distance = curr_obs.ball.position
 
     return rewards
+
+
+def distance(pos1: pb2.Vector2D, pos2: pb2.Vector2D) -> float:
+    return ((pos1.x - pos2.x) ** 2 + (pos1.y - pos2.y) ** 2) ** 0.5
+

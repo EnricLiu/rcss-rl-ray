@@ -26,12 +26,15 @@ from typing import Any
 import gymnasium
 import numpy as np
 from gymnasium import spaces
+from ray.rllib.env import MultiAgentEnv
 
 from schema import RoomSchema, PlayerSchema, PlayerInitState, TeamSide
 from config import EnvConfig
 
 import obs as observation
 import reward
+
+from .action import Action
 from .allocator import AllocatorClient
 from .grpc_srv import GameServicer, pb2
 
@@ -76,7 +79,7 @@ TURN_RIGHT = 4
 KICK = 5
 NUM_ACTIONS = 6
 
-class RCSSEnv(gymnasium.Env):
+class RCSSEnv(MultiAgentEnv):
     """Multi-agent RCSS environment
 
     connects to rcss_cluster via REST / gRPC.
@@ -95,20 +98,32 @@ class RCSSEnv(gymnasium.Env):
     metadata: dict[str, Any] = {"render_modes": []}
 
     def __init__(self, config: EnvConfig) -> None:
-        super().__init__()
         self.__cfg = config
 
         self.agent_team = self.room_schema.teams.agent_team
         self.agent_team_unums = set([agent.unum for agent in self.agent_team.ssp_agents()])
 
-        # Spaces
-        self.observation_space = spaces.Box(
+        # Per-agent spaces (shared by all agents).
+        _obs_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
-        self.action_space = spaces.Discrete(NUM_ACTIONS)
+        _obs_space = spaces.Dict({
+            "obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32),
+            "act_mask": spaces.MultiBinary(NUM_ACTIONS),
+        })
+
+        _act_space = Action.space_schema()
+
+        # Build agent ID set and per-agent space mappings for MultiAgentEnv.
+        self.agents = list(sorted(self.agent_team_unums))
+
+        self.observation_spaces = {unum: _obs_space for unum in self.agents}
+        self.action_spaces = {unum: _act_space for unum in self.agents}
+
+        super().__init__()
 
         # Mutable state (populated by :meth:`reset`).
-        self._step_count: int = 0
+        self.__step_count: int = 0
 
         # Remote-mode components (lazily initialised).
         self.__loop = None
@@ -119,8 +134,6 @@ class RCSSEnv(gymnasium.Env):
 
         self.__allocator: Any = None
         self.__room: str | None = None
-
-        self._prev_world_models: dict[int, Any] = {}
 
         self.__prev_states: dict[int, pb2.State] = {}
 
@@ -148,10 +161,6 @@ class RCSSEnv(gymnasium.Env):
         """Return the side string (``"left"`` or ``"right"``) for the agent team."""
         return "left" if self.agent_team.side == TeamSide.LEFT else "right"
 
-    # ------------------------------------------------------------------
-    # Gymnasium API
-    # ------------------------------------------------------------------
-
     def reset(
         self,
         *,
@@ -159,6 +168,8 @@ class RCSSEnv(gymnasium.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[int, np.ndarray], dict[int, dict[str, Any]]]:
         """Reset the environment and return initial observations."""
+        super().reset(seed=seed, options=options)
+
         # 1. Clean up any previous room.
         self._cleanup_room()
 
@@ -187,15 +198,15 @@ class RCSSEnv(gymnasium.Env):
         states = self.__collect_states()
 
         # 6. Collect initial observations and infos.
-        self._step_count = 0
-        self._prev_world_models = {}
+        self.__step_count = 0
+        self.__prev_states = {}
         obs = self.__states_to_obs(states)
         infos: dict[int, dict[str, Any]] = {unum: {} for unum in self.agent_team_unums}
         return obs, infos
 
     def step(
         self,
-        action_dict: dict[str, int],
+        action_dict: dict[int, Any],
     ) -> tuple[
         dict[int, np.ndarray],
         dict[int, float],
@@ -204,19 +215,17 @@ class RCSSEnv(gymnasium.Env):
         dict[int, dict[str, Any]],
     ]:
         """Execute one simulation step: send actions, wait for next states."""
-        self._step_count += 1
+        self.__step_count += 1
 
         # 1. Build proto actions for every agent and send as a batch.
-        proto_actions: dict[int, Any] = {}
-        for unum in self.agent_team_unums:
-            action = action_dict.get(unum, NOOP)
-            proto_actions[unum] = self._action_to_proto(action)
+        actions = {
+            unum: Action.from_space(action).get_action()
+            for unum, action in action_dict.items()
+        }
+        self.__servicer.send_actions(actions)
 
-        self.__servicer.send_actions(proto_actions)
-
-
-        # 3. Collect observations, rewards, termination, truncation.
-        prev_states = self._prev_world_models
+        # 2. Collect observations, rewards, termination, truncation.
+        prev_states = self.__prev_states
         curr_states = self.__collect_states()
         self.__prev_states = curr_states
 
@@ -393,7 +402,7 @@ class RCSSEnv(gymnasium.Env):
         wm = next((w for w in curr_wms.values() if w is not None), None)
 
         game_over = wm is not None and wm.game_mode_type == pb2.TimeOver
-        truncated = self._step_count >= self.room_schema.stopping.time_up
+        truncated = self.__step_count >= self.room_schema.stopping.time_up
 
         terminateds: dict[int, bool] = {unum: game_over for unum in self.agent_team_unums}
         terminateds["__all__"] = game_over
@@ -417,11 +426,11 @@ class RCSSEnv(gymnasium.Env):
                         "our": wm.our_team_score,
                         "their": wm.their_team_score,
                     },
-                    "step": self._step_count,
+                    "step": self.__step_count,
                     "cycle": wm.cycle,
                 }
             else:
-                infos[unum] = {"step": self._step_count}
+                infos[unum] = {"step": self.__step_count}
         return infos
 
     # ------------------------------------------------------------------
@@ -437,3 +446,4 @@ class RCSSEnv(gymnasium.Env):
         """Convert a unum to an agent ID string, e.g. 7 → "agent_left_7"."""
         side = self._agent_side
         return f"agent_{side}_{unum}"
+
