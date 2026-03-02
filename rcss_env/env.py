@@ -38,46 +38,8 @@ from .action import Action
 from .allocator import AllocatorClient
 from .grpc_srv import GameServicer, pb2
 
-
 logger = logging.getLogger(__name__)
 
-# Max vectorized envs per Ray worker – used for gRPC port allocation.
-_MAX_ENVS_PER_WORKER: int = 10
-
-def _player_config_from_dict(d: dict[str, Any]) -> PlayerSchema:
-    """Reconstruct a :class:`PlayerSchema` from a plain dict."""
-    d = dict(d)  # shallow copy — original dict is not mutated
-    init_state = d.pop("init_state", None)  # extract before **d unpacking
-    if isinstance(init_state, dict):
-        init_state = PlayerInitState(**init_state)
-    return PlayerSchema(**d, init_state=init_state)
-
-
-def _env_config_from_dict(d: dict[str, Any]) -> RoomSchema:
-    """Reconstruct an :class:`EnvConfig` from a (possibly nested) dict.
-
-    Handles the ``ally_players`` / ``opponent_players`` lists whose
-    elements may be plain dicts (as produced by ``dataclasses.asdict``).
-    The original dict *d* is not mutated.
-    """
-    d = dict(d)  # shallow copy — original dict is not mutated
-    for key in ("ally_players", "opponent_players"):
-        raw = d.get(key)
-        if raw is not None:
-            d[key] = [
-                _player_config_from_dict(p) if isinstance(p, dict) else p
-                for p in raw
-            ]
-    return RoomSchema(**d)
-
-
-NOOP = 0
-DASH_FORWARD = 1
-DASH_BACKWARD = 2
-TURN_LEFT = 3
-TURN_RIGHT = 4
-KICK = 5
-NUM_ACTIONS = 6
 
 class RCSSEnv(MultiAgentEnv):
     """Multi-agent RCSS environment
@@ -109,7 +71,7 @@ class RCSSEnv(MultiAgentEnv):
         )
         _obs_space = spaces.Dict({
             "obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32),
-            "act_mask": spaces.MultiBinary(NUM_ACTIONS),
+            "act_mask": spaces.MultiBinary(Action.n_actions()),
         })
 
         _act_space = Action.space_schema()
@@ -320,40 +282,6 @@ class RCSSEnv(MultiAgentEnv):
             raise gymnasium.error.ResetNeeded(
                 "Failed to fetch states for world models, likely due to a communication issue with the simulation. "
             )
-
-    @staticmethod
-    def _action_to_proto(action: int) -> Any:
-        """Convert a discrete action integer to a protobuf ``PlayerActions``."""
-        pa = pb2.PlayerActions()
-
-        if action == DASH_FORWARD:
-            pa.actions.append(pb2.PlayerAction(
-                dash=pb2.Dash(power=100.0, relative_direction=0.0),
-            ))
-        elif action == DASH_BACKWARD:
-            pa.actions.append(pb2.PlayerAction(
-                dash=pb2.Dash(power=-100.0, relative_direction=0.0),
-            ))
-        elif action == TURN_LEFT:
-            pa.actions.append(pb2.PlayerAction(
-                turn=pb2.Turn(relative_direction=-30.0),
-            ))
-        elif action == TURN_RIGHT:
-            pa.actions.append(pb2.PlayerAction(
-                turn=pb2.Turn(relative_direction=30.0),
-            ))
-        elif action == KICK:
-            pa.actions.append(pb2.PlayerAction(
-                kick=pb2.Kick(power=100.0, relative_direction=0.0),
-            ))
-        # NOOP → empty actions list.
-
-        # Always add neck scan as a secondary action.
-        pa.actions.append(pb2.PlayerAction(
-            neck_turn_to_ball_or_scan=pb2.Neck_TurnToBallOrScan(),
-        ))
-
-        return pa
 
     @staticmethod
     def __states_to_obs(states: dict[int, pb2.State]) -> dict[int, np.ndarray]:
