@@ -1,3 +1,11 @@
+"""Room allocator REST client.
+
+Communicates with the rcss_cluster allocator over HTTP:
+  POST   /rooms        — request a simulation room
+  DELETE  /rooms/{id}   — release a simulation room
+  GET    /health       — health check
+"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -9,14 +17,28 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+
 class AllocatorClient:
+    """HTTP client for the rcss_cluster room allocator.
+
+    Args:
+        base_url: Root URL of the allocator service, e.g. ``"http://allocator.rcss.svc:6000"``.
+        timeout: HTTP request timeout in seconds.
+    """
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
 
     def request_room(self, schema: RoomSchema) -> dict[str, Any]:
+        """Request a simulation room from the allocator.
 
+        Serialises the RoomSchema to JSON and POSTs it to the allocator.
+        Returns the allocator's JSON response dict (expected to contain ``room_id``, etc.).
+
+        Raises:
+            RuntimeError: The allocator returned a non-2xx status code.
+        """
         url = f"{self._base_url}/rooms"
         payload = asdict(schema)
 
@@ -34,7 +56,11 @@ class AllocatorClient:
         return data
 
     def release_room(self, room_id: str) -> None:
+        """Release a previously allocated simulation room.
 
+        Args:
+            room_id: ID of the room to release.
+        """
         url = f"{self._base_url}/rooms/{room_id}"
         logger.info("Releasing room %s via %s", room_id, url)
 
@@ -43,7 +69,7 @@ class AllocatorClient:
             logger.warning("Failed to release room %s: %s", room_id, resp.text)
 
     def health_check(self) -> bool:
-
+        """Check whether the allocator is reachable. Returns True if healthy."""
         try:
             resp = httpx.get(
                 f"{self._base_url}/health", timeout=self._timeout

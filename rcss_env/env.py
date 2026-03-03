@@ -1,3 +1,10 @@
+"""RCSS multi-agent Gymnasium environment.
+
+RCSSEnv is a Ray/RLlib-compatible ``MultiAgentEnv`` that requests simulation
+rooms from a REST allocator and exchanges WorldModel / PlayerActions with
+SoccerSimulationProxy sidecars via gRPC.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -20,7 +27,16 @@ from .grpc_srv import GameServicer, pb2
 
 logger = logging.getLogger(__name__)
 
+
 class RCSSEnv(MultiAgentEnv):
+    """Multi-agent RCSS environment.
+
+    Lifecycle:
+      1. __init__: parse config, register agent unums, build obs/action spaces.
+      2. reset:    release old room -> start gRPC server -> reset servicer -> allocate new room -> collect initial states.
+      3. step:     encode & send actions -> collect new states -> compute obs/reward/terminated/truncated/info.
+      4. close:    release room and stop gRPC server.
+    """
 
     metadata: dict[str, Any] = {"render_modes": []}
 
@@ -30,6 +46,7 @@ class RCSSEnv(MultiAgentEnv):
         self.agent_team = self.room_schema.teams.agent_team
         self.agent_team_unums = set([agent.unum for agent in self.agent_team.ssp_agents()])
 
+        # All agents share the same observation / action spaces
         _obs_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
@@ -40,6 +57,7 @@ class RCSSEnv(MultiAgentEnv):
 
         _act_space = Action.space_schema()
 
+        # Sorted list of agent ids (by unum)
         self.agents = list(sorted(self.agent_team_unums))
 
         self.observation_spaces = {unum: _obs_space for unum in self.agents}
@@ -47,17 +65,21 @@ class RCSSEnv(MultiAgentEnv):
 
         super().__init__()
 
+        # Mutable state
         self.__step_count: int = 0
 
         self.__loop = None
 
+        # gRPC components (lazily initialised)
         self.__servicer: GameServicer | None = None
         self.__grpc_server: Any = None
-        self.__grpc_loop: Any = None
+        self.__grpc_loop: Any = None  # asyncio event loop for the gRPC aio server
 
+        # Allocator client and current room id
         self.__allocator: Any = None
         self.__room: str | None = None
 
+        # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
 
         self._setup()
@@ -68,10 +90,11 @@ class RCSSEnv(MultiAgentEnv):
 
     @property
     def room_schema(self) -> RoomSchema:
-
+        """Return the RoomSchema used by this environment."""
         return self.config.room
 
     def _setup(self) -> None:
+        """Initialise the allocator client and gRPC servicer, and register all agent unums."""
         self.__allocator = AllocatorClient(self.config.allocator.addr)
         self.__servicer = GameServicer()
 
@@ -80,8 +103,12 @@ class RCSSEnv(MultiAgentEnv):
 
     @property
     def _agent_side(self) -> str:
-
+        """Return the side string for the agent team ("left" / "right")."""
         return "left" if self.agent_team.side == TeamSide.LEFT else "right"
+
+    # ------------------------------------------------------------------
+    # Core Gymnasium interface
+    # ------------------------------------------------------------------
 
     def reset(
         self,
@@ -89,15 +116,19 @@ class RCSSEnv(MultiAgentEnv):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[dict[int, np.ndarray], dict[int, dict[str, Any]]]:
-
+        """Reset the environment: allocate a new simulation room and return initial observations."""
         super().reset(seed=seed, options=options)
 
+        # 1. Release the previous room
         self._cleanup_room()
 
+        # 2. Ensure the gRPC server is running
         self._start_grpc_server()
 
+        # 3. Flush servicer internal buffers
         self.__servicer.reset()
 
+        # 4. Request a new room from the allocator
         schema = self.config.room
         try:
             response = self.__allocator.request_room(schema)
@@ -112,8 +143,10 @@ class RCSSEnv(MultiAgentEnv):
             )
         self.__room = room_id
 
+        # 5. Wait for all agent sidecars to send their initial states
         states = self.__collect_states()
 
+        # 6. Build initial observations and info dicts
         self.__step_count = 0
         self.__prev_states = {}
         obs = self.__states_to_obs(states)
@@ -130,15 +163,17 @@ class RCSSEnv(MultiAgentEnv):
         dict[int, bool],
         dict[int, dict[str, Any]],
     ]:
-
+        """Execute one simulation step: send actions -> collect new states -> compute outputs."""
         self.__step_count += 1
 
+        # 1. Encode each agent's action to a protobuf message and send them
         actions = {
             unum: Action.from_space(action).get_action()
             for unum, action in action_dict.items()
         }
         self.__servicer.send_actions(actions)
 
+        # 2. Collect new states and compare with the previous step for rewards
         prev_states = self.__prev_states
         curr_states = self.__collect_states()
         self.__prev_states = curr_states
@@ -156,12 +191,16 @@ class RCSSEnv(MultiAgentEnv):
         return obs, rewards, terminateds, truncateds, infos
 
     def close(self) -> None:
-
+        """Release external resources: room + gRPC server."""
         self._cleanup_room()
         self._stop_grpc_server()
 
-    def _start_grpc_server(self) -> None:
+    # ------------------------------------------------------------------
+    # Room / gRPC lifecycle helpers
+    # ------------------------------------------------------------------
 
+    def _start_grpc_server(self) -> None:
+        """Start the gRPC server if it is not already running."""
         if self.__grpc_server is not None:
             return
         from .grpc_srv import serve
@@ -173,7 +212,7 @@ class RCSSEnv(MultiAgentEnv):
         )
 
     def _stop_grpc_server(self) -> None:
-
+        """Gracefully stop the gRPC server and its event loop."""
         if self.__grpc_server is not None and self.__grpc_loop is not None:
             import asyncio
 
@@ -193,7 +232,7 @@ class RCSSEnv(MultiAgentEnv):
             self.__grpc_loop = None
 
     def _cleanup_room(self) -> None:
-
+        """Release the currently allocated room via the allocator."""
         if self.__room and self.__allocator is not None:
             try:
                 self.__allocator.release_room(self.__room)
@@ -201,22 +240,26 @@ class RCSSEnv(MultiAgentEnv):
                 logger.warning("Failed to release room %s: %s", self.__room, exc)
             self.__room = None
 
-    def __prev_state(self, unum: int) -> pb2.State | None:
+    # ------------------------------------------------------------------
+    # State / observation helpers
+    # ------------------------------------------------------------------
 
+    def __prev_state(self, unum: int) -> pb2.State | None:
+        """Return the cached State from the previous step for the given unum."""
         return self.__prev_states.get(unum)
 
     def __prev_obs_wm(self, unum: int) -> pb2.WorldModel | None:
-
+        """Return the observation WorldModel from the previous step for the given unum."""
         if (prev_state := self.__prev_state(unum)) is None: return None
         return prev_state.world_model
 
     def __prev_truth_wm(self, unum: int) -> pb2.WorldModel | None:
-
+        """Return the full-information WorldModel from the previous step for the given unum."""
         if (prev_state := self.__prev_state(unum)) is None: return None
         return prev_state.full_world_model
 
     def __collect_states(self, timeout_s: float = 30.0) -> dict[int, pb2.State]:
-
+        """Block until all registered agents have sent their State."""
         try:
             states = self.__servicer.fetch_states(timeout=timeout_s)
             return states
@@ -228,6 +271,7 @@ class RCSSEnv(MultiAgentEnv):
 
     @staticmethod
     def __states_to_obs(states: dict[int, pb2.State]) -> dict[int, np.ndarray]:
+        """Convert a State dict into a {unum: observation_vector} dict."""
         obs = {
             unum: observation.extract(s.world_model).astype(np.float32)
             for unum, s in states.items()
@@ -240,7 +284,11 @@ class RCSSEnv(MultiAgentEnv):
         prev_states: pb2.State | None,
         curr_states: pb2.State,
     ) -> float:
+        """Compute the per-step reward for a single agent.
 
+        The reward function receives both the observation WorldModel and the
+        full-information WorldModel to support ground-truth-based reward shaping.
+        """
         prev_obs = None
         prev_truth = None
         if prev_states is not None:
@@ -265,7 +313,11 @@ class RCSSEnv(MultiAgentEnv):
     def __check_done(
         self, curr_wms: dict[int, pb2.WorldModel],
     ) -> tuple[dict[int, bool], dict[int, bool]]:
+        """Determine terminated and truncated flags from the current WorldModels.
 
+        terminated: game mode is TimeOver.
+        truncated:  step count has reached StoppingEvents.time_up.
+        """
         wm = next((w for w in curr_wms.values() if w is not None), None)
 
         game_over = wm is not None and wm.game_mode_type == pb2.TimeOver
@@ -283,7 +335,7 @@ class RCSSEnv(MultiAgentEnv):
         self,
         curr_wms: dict[int, pb2.WorldModel],
     ) -> dict[int, dict[str, Any]]:
-
+        """Build the info dict for each agent, including scores, step count, and simulation cycle."""
         infos: dict[int, dict[str, Any]] = {}
         for unum in self.agent_team_unums:
             wm = curr_wms.get(unum)
@@ -300,12 +352,16 @@ class RCSSEnv(MultiAgentEnv):
                 infos[unum] = {"step": self.__step_count}
         return infos
 
+    # ------------------------------------------------------------------
+    # Miscellaneous helpers
+    # ------------------------------------------------------------------
+
     @property
     def obs_dim(self) -> int:
-
+        """Observation vector dimensionality."""
         return observation.dim()
 
     def __agent_name(self, unum: int) -> str:
-
+        """Convert a unum to an agent ID string, e.g. ``"agent_left_7"``."""
         side = self._agent_side
         return f"agent_{side}_{unum}"

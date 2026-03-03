@@ -1,7 +1,12 @@
+"""Normalised 2-D coordinate in the range [0, 1]."""
+
 from dataclasses import dataclass
+
 
 @dataclass
 class Position:
+    """Normalised pitch position. Both x and y must be in [0.0, 1.0]."""
+
     x: float
     y: float
 
