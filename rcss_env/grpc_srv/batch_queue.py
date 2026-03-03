@@ -11,8 +11,10 @@ class BatchQueue[StateTy]:
     def __init__(self, unums: set[int] | None = None, queue_send_timeout_s: float = QUEUE_SEND_TIMEOUT_S, reset_timeout_s: float = RESET_TIMEOUT_S):
         self.__unums = unums or set()
 
+        # timestep -> unum -> state
         self.__states: dict[int, dict[int, StateTy]] = {}
 
+        # unum -> queue[ts, state]
         self.__queues: dict[int, Queue[tuple[int, StateTy]]] = {}
 
         self.__reset_event: Queue[bool] = Queue(maxsize=1)
@@ -81,7 +83,7 @@ class BatchQueue[StateTy]:
 
                     self.__last_timestep = timestep
 
-                    states: dict[int, StateTy] = self.__states.pop(timestep)
+                    states: dict[int, StateTy] = self.__states.pop(timestep) # unum, state
                     unums = states.keys()
                     tasks = [
                         asyncio.wait_for(self.__queues[unum].put((timestep, s)), timeout=self.__queue_send_timeout_s)
