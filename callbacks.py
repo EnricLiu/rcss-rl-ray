@@ -1,10 +1,3 @@
-"""RLlib training callbacks for logging and checkpointing.
-
-Callbacks are invoked by RLlib at various points in the training loop.
-Subclass :class:`RCSSCallbacks` to add custom logic (e.g. environment
-metrics, external logging, curriculum adjustments).
-"""
-
 from __future__ import annotations
 
 import logging
@@ -18,16 +11,7 @@ from ray.rllib.utils.typing import PolicyID
 
 logger = logging.getLogger(__name__)
 
-
 class RCSSCallbacks(DefaultCallbacks):
-    """Custom callbacks that log per-episode RCSS metrics.
-
-    Metrics surfaced to Ray Tune / TensorBoard:
-
-    * ``episode_left_score``  — total goals scored by the left team.
-    * ``episode_right_score`` — total goals scored by the right team.
-    * ``episode_steps``       — number of environment steps in the episode.
-    """
 
     def on_episode_end(
         self,
@@ -38,8 +22,7 @@ class RCSSCallbacks(DefaultCallbacks):
         episode: EpisodeV2,
         **kwargs: Any,
     ) -> None:
-        """Extract and record final scores from the episode's last info dict."""
-        # Collect last-step info from any active agent.
+
         last_info: dict[str, Any] = {}
         for agent_id in episode.get_agents():
             info = episode.last_info_for(agent_id)

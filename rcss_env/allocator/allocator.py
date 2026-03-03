@@ -1,17 +1,9 @@
-"""REST client for the rcss_cluster match allocator.
+"""Room allocator REST client.
 
-The allocator is a Kubernetes-hosted service that manages simulation
-rooms.  Clients request a room via ``POST /rooms`` with a JSON body
-that describes team composition, stopping conditions, etc.  The
-allocator provisions the room and returns a connection address.
-
-This module provides :class:`AllocatorClient` as a thin wrapper around
-the allocator's HTTP API.  It is used by
-:class:`~rcss_rl.env.rcss_env.RCSSEnv` when running in *remote* mode.
-
-Dependencies
-------------
-Requires the ``requests`` library (listed as an optional dependency).
+Communicates with the rcss_cluster allocator over HTTP:
+  POST   /rooms        — request a simulation room
+  DELETE  /rooms/{id}   — release a simulation room
+  GET    /health       — health check
 """
 
 from __future__ import annotations
@@ -29,12 +21,9 @@ logger = logging.getLogger(__name__)
 class AllocatorClient:
     """HTTP client for the rcss_cluster room allocator.
 
-    Parameters
-    ----------
-    base_url:
-        Allocator endpoint, e.g. ``"http://allocator.rcss.svc:6000"``.
-    timeout:
-        HTTP request timeout in seconds.
+    Args:
+        base_url: Root URL of the allocator service, e.g. ``"http://allocator.rcss.svc:6000"``.
+        timeout: HTTP request timeout in seconds.
     """
 
     def __init__(self, base_url: str, timeout: float = 30.0) -> None:
@@ -42,27 +31,14 @@ class AllocatorClient:
         self._timeout = timeout
 
     def request_room(self, schema: RoomSchema) -> dict[str, Any]:
-        """Ask the allocator for a simulation room.
+        """Request a simulation room from the allocator.
 
-        Parameters
-        ----------
-        schema:
-            The room configuration payload.
+        Serialises the RoomSchema to JSON and POSTs it to the allocator.
+        Returns the allocator's JSON response dict (expected to contain ``room_id``, etc.).
 
-        Returns
-        -------
-        dict
-            JSON response from the allocator containing the room
-            connection address and metadata.
-
-        Raises
-        ------
-        ImportError
-            If the ``requests`` library is not installed.
-        RuntimeError
-            If the allocator returns a non-2xx status code.
+        Raises:
+            RuntimeError: The allocator returned a non-2xx status code.
         """
-
         url = f"{self._base_url}/rooms"
         payload = asdict(schema)
 
@@ -80,14 +56,11 @@ class AllocatorClient:
         return data
 
     def release_room(self, room_id: str) -> None:
-        """Release (delete) a previously allocated room.
+        """Release a previously allocated simulation room.
 
-        Parameters
-        ----------
-        room_id:
-            Identifier of the room to release.
+        Args:
+            room_id: ID of the room to release.
         """
-
         url = f"{self._base_url}/rooms/{room_id}"
         logger.info("Releasing room %s via %s", room_id, url)
 
@@ -96,7 +69,7 @@ class AllocatorClient:
             logger.warning("Failed to release room %s: %s", room_id, resp.text)
 
     def health_check(self) -> bool:
-        """Return *True* if the allocator is reachable."""
+        """Check whether the allocator is reachable. Returns True if healthy."""
         try:
             resp = httpx.get(
                 f"{self._base_url}/health", timeout=self._timeout

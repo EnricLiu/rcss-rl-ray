@@ -1,15 +1,3 @@
-"""Custom fully-connected network for RLlib policy and value heads.
-
-This model is registered under the name ``"rcss_fcnet"`` and can be
-referenced by that string in any RLlib algorithm config.
-
-Architecture (both policy and value share the same trunk):
-
-    input → FC(256) → ReLU → FC(256) → ReLU
-                                          ├─→ policy logits (action_space.n)
-                                          └─→ value (1)
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -23,23 +11,7 @@ from ray.rllib.models import ModelCatalog
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.typing import TensorType, ModelConfigDict
 
-
 class RCSSFCNet(TorchModelV2, nn.Module):
-    """Shared-trunk fully-connected model for RCSS agents.
-
-    The same trunk weights are used for both the policy (logits) head and
-    the value-function head, keeping the model compact.
-
-    Args:
-        obs_space:     Observation space (expected to be a flat ``Box``).
-        action_space:  Action space (expected to be a ``Discrete``).
-        num_outputs:   Number of output logits (== action_space.n).
-        model_config:  RLlib model config dict.  Recognised custom keys:
-
-                       ``hidden_sizes`` (list[int], default ``[256, 256]``):
-                           Width of each hidden layer in the trunk.
-        name:          Model name used by RLlib.
-    """
 
     def __init__(
         self,
@@ -60,7 +32,6 @@ class RCSSFCNet(TorchModelV2, nn.Module):
 
         obs_dim = int(np.prod(obs_space.shape))
 
-        # Build shared trunk.
         layers: list[nn.Module] = []
         in_size = obs_dim
         for h in hidden_sizes:
@@ -68,9 +39,8 @@ class RCSSFCNet(TorchModelV2, nn.Module):
             in_size = h
         self._trunk = nn.Sequential(*layers)
 
-        # Policy head (logits).
         self._policy_head = nn.Linear(in_size, num_outputs)
-        # Value head.
+
         self._value_head = nn.Linear(in_size, 1)
 
         self._last_value: torch.Tensor | None = None
@@ -82,7 +52,7 @@ class RCSSFCNet(TorchModelV2, nn.Module):
         state: list[TensorType],
         seq_lens: TensorType,
     ) -> tuple[TensorType, list[TensorType]]:
-        """Compute action logits from *input_dict["obs_flat"]*."""
+
         obs = input_dict["obs_flat"].float()
         trunk_out = self._trunk(obs)
         self._last_value = self._value_head(trunk_out).squeeze(1)
@@ -90,15 +60,10 @@ class RCSSFCNet(TorchModelV2, nn.Module):
 
     @override(TorchModelV2)
     def value_function(self) -> TensorType:
-        """Return the value estimate computed during the last ``forward`` call."""
+
         assert self._last_value is not None, "forward() must be called first"
         return self._last_value
 
-
 def register() -> None:
-    """Register ``RCSSFCNet`` with RLlib's :class:`ModelCatalog`.
 
-    Call this once before constructing any RLlib ``Algorithm`` that uses
-    ``"custom_model": "rcss_fcnet"``.
-    """
     ModelCatalog.register_custom_model("rcss_fcnet", RCSSFCNet)
