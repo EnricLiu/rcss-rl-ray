@@ -1,24 +1,27 @@
+"""Training hyper-parameter configuration."""
+
 from pathlib import Path
 from dataclasses import dataclass
 
+
 @dataclass
 class TrainConfig:
-    """Top-level training configuration passed to RLlib.
+    """Hyper-parameter set for the RLlib training loop.
 
     Attributes:
-        algo:                RLlib algorithm name (e.g. ``"PPO"``, ``"IMPALA"``).
-        num_env_runners:     Number of parallel environment runner workers.
-        num_envs_per_runner: Number of vectorised envs per runner worker.
-        train_batch_size:    Total number of transitions per SGD update.
-        sgd_minibatch_size:  Mini-batch size for each SGD step (PPO only).
-        num_sgd_iter:        Number of SGD epochs per training iteration.
-        lr:                  Optimiser learning rate.
-        gamma:               Discount factor.
-        entropy_coeff:       Entropy bonus coefficient.
-        clip_param:          PPO clipping parameter.
-        num_iterations:      Total number of training iterations to run.
-        checkpoint_freq:     Save a checkpoint every N iterations (0 = never).
-        checkpoint_path:     Directory where checkpoints are written.
+        algo: RLlib algorithm name, e.g. ``"PPO"`` or ``"IMPALA"``.
+        num_env_runners: Number of parallel env-runner workers.
+        num_envs_per_runner: Number of vectorised envs per runner.
+        train_batch_size: Total transitions per SGD update.
+        sgd_minibatch_size: Mini-batch size per SGD pass (PPO only).
+        num_sgd_iter: SGD epochs per training iteration.
+        lr: Optimiser learning rate.
+        gamma: Discount factor.
+        entropy_coeff: Policy entropy regularisation coefficient.
+        clip_param: PPO clipping parameter.
+        num_iterations: Total number of training iterations.
+        checkpoint_freq: Save a checkpoint every N iterations (0 = disabled).
+        checkpoint_path: Directory for storing checkpoints.
     """
 
     algo: str = "PPO"

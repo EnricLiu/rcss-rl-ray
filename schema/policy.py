@@ -1,3 +1,11 @@
+"""Policy type hierarchy.
+
+Defines the policy kind enums (Bot / Agent) and concrete policy dataclasses:
+- BotPolicy: scripted bot policy
+- AgentPolicy: base class for RL-trained agent policies
+- SspAgentPolicy: agent policy that communicates via gRPC with a SoccerSimulationProxy sidecar
+"""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -6,15 +14,27 @@ from dataclasses import dataclass
 
 
 class PolicyKind(Enum):
+    """Top-level policy kind: Bot (scripted) or Agent (RL-trained)."""
+
     Bot = "bot"
     Agent = "agent"
 
 
 class PolicyAgentKind(Enum):
+    """Agent policy sub-type. Currently only Ssp (SoccerSimulationProxy) is supported."""
+
     Ssp = "ssp"
+
 
 @dataclass
 class Policy:
+    """Base policy class.
+
+    Attributes:
+        kind: Policy kind (Bot / Agent).
+        image: Container image name for this policy.
+    """
+
     kind: PolicyKind
     image: str
 
@@ -24,6 +44,10 @@ class Policy:
 
     @staticmethod
     def parse(maybe_policy: dict[str, Any]) -> Policy:
+        """Parse a dictionary into the appropriate Policy subclass.
+
+        Dispatches to BotPolicy or AgentPolicy parsing based on the ``kind`` field.
+        """
         kind_str = maybe_policy.get("kind")
         image = maybe_policy.get("image")
 
@@ -32,7 +56,7 @@ class Policy:
         except Exception:
             raise ValueError(f"Unknown policy kind: {kind_str}, expected one of {[e.value for e in PolicyKind]}")
 
-        policy = Policy(kind=kind, image=image) # value error
+        policy = Policy(kind=kind, image=image)
         match kind:
             case PolicyKind.Bot:
                 return BotPolicy.parse(policy)
@@ -43,8 +67,11 @@ class Policy:
             case _:
                 raise ValueError(f"Unsupported policy kind: {kind}")
 
+
 @dataclass
 class BotPolicy(Policy):
+    """Scripted bot policy. ``kind`` must be :attr:`PolicyKind.Bot`."""
+
     def __post_init__(self):
         if self.kind != PolicyKind.Bot:
             raise ValueError("kind must be 'bot' for BotPolicy")
@@ -53,9 +80,17 @@ class BotPolicy(Policy):
     def parse(policy: Policy) -> BotPolicy:
         return BotPolicy(kind=policy.kind, image=policy.image)
 
+
 @dataclass
 class AgentPolicy(Policy):
+    """Base class for RL agent policies, carrying an agent sub-type field.
+
+    Attributes:
+        agent: Agent sub-type enum (e.g. Ssp).
+    """
+
     agent: PolicyAgentKind
+
     def __post_init__(self):
         if self.kind != PolicyKind.Agent:
             raise ValueError("kind must be 'agent' for AgentPolicy")
@@ -64,6 +99,11 @@ class AgentPolicy(Policy):
 
     @staticmethod
     def parse(policy: Policy, maybe_agent_policy: dict[str, Any]) -> AgentPolicy:
+        """Parse a dictionary into the appropriate AgentPolicy subclass.
+
+        Creates a :class:`SspAgentPolicy` based on the ``agent`` field, or raises on
+        unknown agent kinds.
+        """
         agent_str = maybe_agent_policy.get("agent")
         try:
             agent = PolicyAgentKind(agent_str)
@@ -85,6 +125,15 @@ class AgentPolicy(Policy):
 
 @dataclass
 class SspAgentPolicy(AgentPolicy):
+    """SoccerSimulationProxy agent policy.
+
+    Carries additional gRPC connection info for communicating with the sidecar.
+
+    Attributes:
+        grpc_host: Sidecar gRPC host address.
+        grpc_port: Sidecar gRPC port (1-65535).
+    """
+
     grpc_host: str
     grpc_port: int
 
@@ -101,4 +150,5 @@ class SspAgentPolicy(AgentPolicy):
             raise ValueError("grpc_port must be in the range 1-65535")
 
     def grpc_addr(self) -> str:
+        """Return the gRPC address as a ``host:port`` string."""
         return f"{self.grpc_host}:{self.grpc_port}"
