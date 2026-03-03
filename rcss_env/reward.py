@@ -8,7 +8,6 @@ def calculate(
 ) -> float:
     rewards = 0.0
 
-    # Goal reward (+1 for our goal, -1 for opponent goal).
     score_diff = curr_obs.our_team_score - prev_obs.our_team_score
     opp_diff = curr_obs.their_team_score - prev_obs.their_team_score
     rewards += float(score_diff)
@@ -18,7 +17,5 @@ def calculate(
 
     return rewards
 
-
 def distance(pos1: pb2.Vector2D, pos2: pb2.Vector2D) -> float:
     return ((pos1.x - pos2.x) ** 2 + (pos1.y - pos2.y) ** 2) ** 0.5
-

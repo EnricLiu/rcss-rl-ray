@@ -64,8 +64,7 @@ enum LoggerLevel{
   ANALYZER = 0x00040000;
   ACTION_CHAIN = 0x00080000;
   PLAN = 0x00100000;
-  // TRAINING = 0x80000000;
-  // LEVEL_ANY = 0xffffffff;
+
 }
 
 message Player {
@@ -560,13 +559,13 @@ message DebugClient {
   string message = 1;
 }
 
-message Body_GoToPoint { // todo more variables
+message Body_GoToPoint {
   Vector2D target_point = 1;
   float distance_threshold = 2;
   float max_dash_power = 3;
 }
 
-message Body_SmartKick { // todo more variables
+message Body_SmartKick {
   Vector2D target_point = 1;
   float first_speed = 2;
   float first_speed_threshold = 3;
@@ -677,7 +676,7 @@ message Focus_Reset {
 message Neck_ScanField {
 }
 
-message Neck_ScanPlayers { // todo min/max_angle
+message Neck_ScanPlayers {
 }
 
 message Neck_TurnToBallAndPlayer {
@@ -869,7 +868,7 @@ message DoRecover {}
 
 message DoChangeMode {
   GameModeType game_mode_type = 1;
-  Side side = 2; //some of the game mode need to know the side
+  Side side = 2;
 }
 
 message DoChangePlayerType {
@@ -1202,6 +1201,6 @@ service Game {
   rpc SendInitMessage(InitMessage) returns (Empty) {}
   rpc SendServerParams(ServerParam) returns (Empty) {}
   rpc SendPlayerParams(PlayerParam) returns (Empty) {}
-  rpc SendPlayerType(PlayerType) returns (Empty) {} //should be PlayerTypes
+  rpc SendPlayerType(PlayerType) returns (Empty) {}
   rpc GetInitMessage(Empty) returns (InitMessageFromServer) {}
 }

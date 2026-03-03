@@ -1,24 +1,3 @@
-"""Training entry point for RCSS multi-agent RL with Ray/RLlib.
-
-Usage
------
-Train with default settings::
-
-    python -m rcss_rl.train
-
-Train for 200 iterations with a custom config::
-
-    python -m rcss_rl.train --iterations 200 --num-env-runners 4
-
-Or via the installed script::
-
-    rcss-train --iterations 50 --algo IMPALA
-
-The script initialises Ray, builds the RLlib :class:`~ray.rllib.algorithms.Algorithm`
-from :class:`~rcss_rl.config.TrainConfig`, runs the training loop, and saves
-periodic checkpoints to the configured directory.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -39,25 +18,13 @@ from rcss_rl.models.fcnet import register as register_model
 
 logger = logging.getLogger(__name__)
 
-# Map supported algorithm names to their RLlib config constructors.
 _ALGO_CONFIG_MAP = {
     "PPO": PPOConfig,
     "IMPALA": ImpalaConfig,
 }
 
-
 def build_algo(cfg: TrainConfig) -> ray.rllib.algorithms.Algorithm:
-    """Construct and return an RLlib ``Algorithm`` from *cfg*.
 
-    Args:
-        cfg: Fully populated :class:`~rcss_rl.config.TrainConfig`.
-
-    Returns:
-        An RLlib ``Algorithm`` ready to call ``.train()`` on.
-
-    Raises:
-        ValueError: If ``cfg.algo`` is not in the supported algorithm list.
-    """
     algo_name = cfg.algo.upper()
     if algo_name not in _ALGO_CONFIG_MAP:
         supported = ", ".join(_ALGO_CONFIG_MAP)
@@ -67,7 +34,6 @@ def build_algo(cfg: TrainConfig) -> ray.rllib.algorithms.Algorithm:
 
     env_cfg_dict = dataclasses.asdict(cfg.env_config)
 
-    # Determine per-agent policy IDs from the env config.
     agent_ids = [f"left_{i}" for i in range(cfg.env_config.num_left)] + [
         f"right_{i}" for i in range(cfg.env_config.num_right)
     ]
@@ -96,7 +62,6 @@ def build_algo(cfg: TrainConfig) -> ray.rllib.algorithms.Algorithm:
         .framework("torch")
     )
 
-    # PPO-specific hyper-parameters.
     if algo_name == "PPO":
         algo_config = algo_config.training(
             sgd_minibatch_size=cfg.sgd_minibatch_size,
@@ -107,14 +72,8 @@ def build_algo(cfg: TrainConfig) -> ray.rllib.algorithms.Algorithm:
 
     return algo_config.build()
 
-
 def train(cfg: TrainConfig | None = None) -> None:
-    """Run the full training loop.
 
-    Args:
-        cfg: Training configuration.  Defaults to :class:`~rcss_rl.config.TrainConfig`
-             with all default values when *None*.
-    """
     if cfg is None:
         cfg = TrainConfig()
 
@@ -148,9 +107,8 @@ def train(cfg: TrainConfig | None = None) -> None:
     algo.stop()
     ray.shutdown()
 
-
 def _parse_args(argv: list[str] | None = None) -> TrainConfig:
-    """Parse command-line arguments and return a :class:`~rcss_rl.config.TrainConfig`."""
+
     parser = argparse.ArgumentParser(
         description="Train RCSS multi-agent RL policy with Ray/RLlib"
     )
@@ -194,11 +152,9 @@ def _parse_args(argv: list[str] | None = None) -> TrainConfig:
         env_config=env_cfg,
     )
 
-
 def main(argv: list[str] | None = None) -> None:
-    """CLI entry point — parse arguments and launch training."""
-    train(_parse_args(argv))
 
+    train(_parse_args(argv))
 
 if __name__ == "__main__":
     main(sys.argv[1:])

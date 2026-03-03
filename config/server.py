@@ -4,7 +4,7 @@ from dataclasses import dataclass
 class ServerConfig:
     host: str
     port: int
-    timeout: int = 10  # seconds
+    timeout: int = 10
 
     @property
     def addr(self) -> str:

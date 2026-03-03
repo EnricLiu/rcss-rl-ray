@@ -22,7 +22,6 @@ class TeamSchema:
         if len(self.players) > 11:
             raise ValueError("A team cannot have more than 11 players")
 
-
     def agents(self) -> Generator[PlayerSchema[AgentPolicy], Any, None]:
         for p in self.players:
             if p.policy.kind == PolicyKind.Agent:
@@ -53,7 +52,6 @@ class TeamSchema:
                     raise ValueError(
                         f"Player {p.unum} has policy kind 'agent' but policy is not an AgentPolicy instance")
 
-
     def is_agentic(self) -> bool:
         try:
             next(self.agents())
@@ -83,7 +81,6 @@ class TeamsSchema:
 
         if left_is_agentic: self.__agent_team_side = TeamSide.LEFT
         else: self.__agent_team_side = TeamSide.RIGHT
-
 
     @property
     def agent_team(self):

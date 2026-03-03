@@ -1,5 +1,3 @@
-"""Training and environment configuration dataclasses."""
-
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -11,4 +9,3 @@ class EnvConfig:
     room: RoomSchema
     grpc: ServerConfig
     allocator: ServerConfig
-

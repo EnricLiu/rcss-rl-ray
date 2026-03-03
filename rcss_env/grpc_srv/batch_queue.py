@@ -11,10 +11,8 @@ class BatchQueue[StateTy]:
     def __init__(self, unums: set[int] | None = None, queue_send_timeout_s: float = QUEUE_SEND_TIMEOUT_S, reset_timeout_s: float = RESET_TIMEOUT_S):
         self.__unums = unums or set()
 
-        # timestep -> unum -> state
         self.__states: dict[int, dict[int, StateTy]] = {}
 
-        # unum -> queue[ts, state]
         self.__queues: dict[int, Queue[tuple[int, StateTy]]] = {}
 
         self.__reset_event: Queue[bool] = Queue(maxsize=1)
@@ -26,7 +24,6 @@ class BatchQueue[StateTy]:
         self.__queue_send_timeout_s = queue_send_timeout_s
 
         self.__task: Task | None = None
-
 
     async def reset(self):
         if self.__task is not None and not self.__task.done():
@@ -58,15 +55,7 @@ class BatchQueue[StateTy]:
         return unum in self.__unums
 
     async def __run(self):
-        """
-        get a receiver generator that yields (timestep, {unum: state})
-        whenever a new batch of states is available for all unums at a given timestep.
 
-        The generator will yield batches in order of timestep,
-        and will skip any batches for timesteps that are less than or equal to the last yielded timestep.
-        Returns:
-            AsyncGenerator[Tuple[int, dict[int, StateTy]], None]: An async generator that yields (timestep, {unum: state}) tuples.
-        """
         try:
             while True:
                 reset_task = asyncio.ensure_future(self.__reset_event.get())
@@ -92,7 +81,7 @@ class BatchQueue[StateTy]:
 
                     self.__last_timestep = timestep
 
-                    states: dict[int, StateTy] = self.__states.pop(timestep) # unum, state
+                    states: dict[int, StateTy] = self.__states.pop(timestep)
                     unums = states.keys()
                     tasks = [
                         asyncio.wait_for(self.__queues[unum].put((timestep, s)), timeout=self.__queue_send_timeout_s)

@@ -10,7 +10,6 @@ from gymnasium import spaces
 
 from .grpc_srv import pb2
 
-
 @dataclass
 class Action:
     action: int
@@ -75,7 +74,7 @@ class Action:
             elif isinstance(constraints, set):
                 low, high = min(constraints), max(constraints)
                 scaled_param = low + (param - self.PARAM_LOW) * (high - low) / (self.PARAM_HIGH - self.PARAM_LOW)
-                # find the closest valid value in the set
+
                 closest_value = min(constraints, key=lambda x: abs(x - scaled_param))
                 action_params[param_name] = closest_value
 
@@ -104,4 +103,3 @@ class Action:
         action = action_dict["actions"]
         params = action_dict["params"]
         return Action(action=action, params=params)
-

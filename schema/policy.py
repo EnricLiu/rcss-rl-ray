@@ -4,11 +4,9 @@ from enum import Enum
 from typing import Any
 from dataclasses import dataclass
 
-
 class PolicyKind(Enum):
     Bot = "bot"
     Agent = "agent"
-
 
 class PolicyAgentKind(Enum):
     Ssp = "ssp"
@@ -32,7 +30,7 @@ class Policy:
         except Exception:
             raise ValueError(f"Unknown policy kind: {kind_str}, expected one of {[e.value for e in PolicyKind]}")
 
-        policy = Policy(kind=kind, image=image) # value error
+        policy = Policy(kind=kind, image=image)
         match kind:
             case PolicyKind.Bot:
                 return BotPolicy.parse(policy)
@@ -81,7 +79,6 @@ class AgentPolicy(Policy):
 
         except ValueError:
             raise ValueError(f"Unknown agent kind: {agent_str}, expected one of {[e.value for e in PolicyAgentKind]}")
-
 
 @dataclass
 class SspAgentPolicy(AgentPolicy):
