@@ -304,8 +304,8 @@ class RCSSEnv(MultiAgentEnv):
 
         ret = reward.calculate(
             prev_obs,
-            curr_obs,
             prev_truth,
+            curr_obs,
             curr_truth,
         )
         return ret
