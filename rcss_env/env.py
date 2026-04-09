@@ -15,7 +15,7 @@ import numpy as np
 from gymnasium import spaces
 from ray.rllib.env import MultiAgentEnv
 
-from schema import RoomSchema, PlayerSchema, PlayerInitState, TeamSide
+from schema import GameServerSchema, TeamSide
 from config import EnvConfig
 
 import obs as observation
@@ -43,7 +43,7 @@ class RCSSEnv(MultiAgentEnv):
     def __init__(self, config: EnvConfig) -> None:
         self.__cfg = config
 
-        self.agent_team = self.room_schema.teams.agent_team
+        self.agent_team = self.schema.teams.agent_team
         self.agent_team_unums = set([agent.unum for agent in self.agent_team.ssp_agents()])
 
         # All agents share the same observation / action spaces
@@ -71,7 +71,7 @@ class RCSSEnv(MultiAgentEnv):
         self.__loop = None
 
         # gRPC components (lazily initialised)
-        self.__servicer: GameServicer | None = None
+        self.__servicer: GameServicer = None
         self.__grpc_server: Any = None
         self.__grpc_loop: Any = None  # asyncio event loop for the gRPC aio server
 
@@ -89,13 +89,13 @@ class RCSSEnv(MultiAgentEnv):
         return self.__cfg
 
     @property
-    def room_schema(self) -> RoomSchema:
+    def schema(self) -> GameServerSchema:
         """Return the RoomSchema used by this environment."""
         return self.config.room
 
     def _setup(self) -> None:
-        """Initialise the allocator client and gRPC servicer, and register all agent unums."""
-        self.__allocator = AllocatorClient(self.config.allocator.addr)
+        """Initialize the allocator client and gRPC servicer, and register all agent unums."""
+        self.__allocator = AllocatorClient(self.config.allocator)
         self.__servicer = GameServicer()
 
         for unum in self.agent_team_unums:
@@ -159,8 +159,8 @@ class RCSSEnv(MultiAgentEnv):
     ) -> tuple[
         dict[int, np.ndarray],
         dict[int, float],
-        dict[int, bool],
-        dict[int, bool],
+        dict[Any, bool],
+        dict[Any, bool],
         dict[int, dict[str, Any]],
     ]:
         """Execute one simulation step: send actions -> collect new states -> compute outputs."""
@@ -180,8 +180,9 @@ class RCSSEnv(MultiAgentEnv):
 
         obs = self.__states_to_obs(curr_states)
         rewards = {
-            unum: self.__calc_reward(unum, prev_states.get(unum), curr_states.get(unum))
+            unum: self.__calc_reward(unum, prev_states.get(unum), curr_states[unum])
             for unum in self.agent_team_unums
+            if unum in curr_states
         }
 
         curr_wms = {unum: state.world_model for unum, state in curr_states.items()}
@@ -302,17 +303,23 @@ class RCSSEnv(MultiAgentEnv):
         curr_obs = curr_states.world_model
         curr_truth = curr_states.full_world_model
 
+        if prev_obs is None or prev_truth is None:
+            return 0.0
+
+        prev_obs_wm: pb2.WorldModel = prev_obs
+        prev_truth_wm: pb2.WorldModel = prev_truth
+
         ret = reward.calculate(
-            prev_obs,
+            prev_obs_wm,
+            prev_truth_wm,
             curr_obs,
-            prev_truth,
             curr_truth,
         )
         return ret
 
     def __check_done(
         self, curr_wms: dict[int, pb2.WorldModel],
-    ) -> tuple[dict[int, bool], dict[int, bool]]:
+    ) -> tuple[dict[Any, bool], dict[Any, bool]]:
         """Determine terminated and truncated flags from the current WorldModels.
 
         terminated: game mode is TimeOver.
@@ -321,12 +328,13 @@ class RCSSEnv(MultiAgentEnv):
         wm = next((w for w in curr_wms.values() if w is not None), None)
 
         game_over = wm is not None and wm.game_mode_type == pb2.TimeOver
-        truncated = self.__step_count >= self.room_schema.stopping.time_up
+        time_up = self.schema.stopping.time_up
+        truncated = time_up is not None and self.__step_count >= time_up
 
-        terminateds: dict[int, bool] = {unum: game_over for unum in self.agent_team_unums}
+        terminateds: dict[Any, bool] = {unum: game_over for unum in self.agent_team_unums}
         terminateds["__all__"] = game_over
 
-        truncateds: dict[int, bool] = {unum: truncated for unum in self.agent_team_unums}
+        truncateds: dict[Any, bool] = {unum: truncated for unum in self.agent_team_unums}
         truncateds["__all__"] = truncated
 
         return terminateds, truncateds

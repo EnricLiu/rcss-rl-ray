@@ -1,10 +1,9 @@
 """Network service connection configuration."""
 
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 
-@dataclass
-class ServerConfig:
+class ServerConfig(BaseModel):
     """Generic server connection settings (host + port + timeout)."""
 
     host: str

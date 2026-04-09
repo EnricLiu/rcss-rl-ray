@@ -1,37 +1,42 @@
-"""Player configuration schema."""
+from __future__ import annotations
 
-from .policy import Policy
+from typing import Any
+
+from pydantic import Field, field_validator
+
+from ._base import SchemaModel
+from .policy import BotPolicy, Policy, SspAgentPolicy
 from .position import Position
-from dataclasses import dataclass
 
 
-@dataclass
-class PlayerInitState:
-    """Override for a player's initial state.
-
-    Attributes:
-        pos: Normalised initial position (x, y both in [0, 1]).
-        stamina: Initial stamina value, defaults to 8000.
-    """
-
-    pos: Position
-    stamina: int = 8000
+class PlayerInitState(SchemaModel):
+    pos: Position | None = None
+    stamina: int | None = Field(default=None, ge=0, le=65535)
 
 
-@dataclass
-class PlayerSchema[PolicyType: Policy]:
+class PlayerActionList(SchemaModel):
+    dash: bool = False
+    catch_: bool = Field(default=False, alias="catch", serialization_alias="catch")
+
+
+class PlayerSchema(SchemaModel):
     """Configuration for a single player; generic over the policy type.
 
-    Attributes:
-        unum: Uniform number (1-11).
-        policy: Policy instance controlling this player (Bot / Agent, etc.).
-        goalie: Whether this player is the goalkeeper.
-        init_state: Optional initial-state override (position, stamina).
-        blocklist: Optional action blocklist; keys are action names, values indicate disabled.
-    """
+        Attributes:
+            unum: Uniform number (1-11).
+            policy: Policy instance controlling this player (Bot / Agent, etc.).
+            goalie: Whether this player is the goalkeeper.
+            init_state: Optional initial-state override (position, stamina).
+            blocklist: Optional action blocklist; keys are action names, values indicate disabled.
+        """
 
-    unum: int
-    policy: PolicyType
+    unum: int = Field(ge=1, le=12)
     goalie: bool = False
-    init_state: PlayerInitState | None = None
-    blocklist: dict[str, bool] | None = None
+    policy: BotPolicy | SspAgentPolicy = Field(default_factory=Policy.helios_base)
+    init_state: PlayerInitState = Field(default_factory=PlayerInitState)
+    blocklist: PlayerActionList = Field(default_factory=PlayerActionList)
+
+    @field_validator("policy", mode="before")
+    @classmethod
+    def _parse_policy(cls, value: Any) -> BotPolicy | SspAgentPolicy:
+        return Policy.parse(value)
