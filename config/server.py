@@ -1,12 +1,12 @@
 """Network service connection configuration."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, IPvAnyAddress
 
 
 class ServerConfig(BaseModel):
     """Generic server connection settings (host + port + timeout)."""
 
-    host: str
+    host: IPvAnyAddress
     port: int
     timeout: int = 10  # timeout in seconds
 

@@ -17,17 +17,18 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from ipaddress import IPv4Address
 
 import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 
 from callbacks import RCSSCallbacks
-from config import EnvConfig, TrainConfig, ServerConfig
+from config import EnvConfig, TrainConfig, ServerConfig, AllocatorConfig
 from models.fcnet import register as register_model
 from rcss_env import RCSSEnv
 from schema import (
-    RoomSchema,
+    GameServerSchema,
     TeamsSchema,
     TeamSchema,
     TeamSide,
@@ -46,13 +47,13 @@ logger = logging.getLogger(__name__)
 
 def make_default_room_schema(
     num_agents: int = 11,
-    grpc_host: str = "localhost",
+    grpc_host: IPv4Address = IPv4Address('127.0.0.1'),
     grpc_port: int = 50051,
     bot_image: str = "HELIOS/helios-base",
     agent_image: str = "Cyrus2D/SoccerSimulationProxy",
     time_up: int = 6000,
-) -> RoomSchema:
-    """Create a minimal RoomSchema with *num_agents* SSP-agent players on the
+) -> GameServerSchema:
+    """Create a minimal GameServerSchema with *num_agents* SSP-agent players on the
     left team and 11 scripted bots on the right team.
     """
 
@@ -94,7 +95,7 @@ def make_default_room_schema(
         players=bot_players,
     )
 
-    return RoomSchema(
+    return GameServerSchema(
         teams=TeamsSchema(left=left_team, right=right_team),
         stopping=StoppingEvents(time_up=time_up),
         referee=RefereeSchema(enable=True),
@@ -102,20 +103,20 @@ def make_default_room_schema(
 
 
 def make_env_config(
-    grpc_host: str = "0.0.0.0",
+    grpc_host: IPv4Address = IPv4Address('127.0.0.1'),
     grpc_port: int = 50051,
     allocator_host: str = "localhost",
     allocator_port: int = 8080,
-    room_schema: RoomSchema | None = None,
+    gs_schema: GameServerSchema = None,
 ) -> EnvConfig:
     """Assemble an :class:`EnvConfig` from connection parameters."""
-    if room_schema is None:
-        room_schema = make_default_room_schema(grpc_host=grpc_host, grpc_port=grpc_port)
+    if gs_schema is None:
+        gs_schema = make_default_room_schema(grpc_host=grpc_host, grpc_port=grpc_port)
 
     return EnvConfig(
-        room=room_schema,
+        room=gs_schema,
         grpc=ServerConfig(host=grpc_host, port=grpc_port),
-        allocator=ServerConfig(host=allocator_host, port=allocator_port),
+        allocator=AllocatorConfig(base_url=f"{allocator_host}:{allocator_port}"),
     )
 
 
@@ -251,13 +252,8 @@ def main(argv: list[str] | None = None) -> None:
         time_up=args.time_up,
     )
 
-    env_config = make_env_config(
-        grpc_host=args.grpc_host,
-        grpc_port=args.grpc_port,
-        allocator_host=args.allocator_host,
-        allocator_port=args.allocator_port,
-        room_schema=room_schema,
-    )
+    env_config = make_env_config(grpc_host=args.grpc_host, grpc_port=args.grpc_port, allocator_host=args.allocator_host,
+                                 allocator_port=args.allocator_port, gs_schema=room_schema)
 
     # ---- 4. Build PPO algorithm ----
     ppo_config = build_ppo_config(train_cfg, env_config)
