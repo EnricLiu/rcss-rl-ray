@@ -30,7 +30,7 @@ class PlayerSchema(SchemaModel):
             blocklist: Optional action blocklist; keys are action names, values indicate disabled.
         """
 
-    unum: int = Field(ge=1, le=12)
+    unum: int = Field(ge=1, le=11)
     goalie: bool = False
     policy: BotPolicy | SspAgentPolicy = Field(default_factory=Policy.helios_base)
     init_state: PlayerInitState = Field(default_factory=PlayerInitState)

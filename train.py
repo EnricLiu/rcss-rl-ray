@@ -116,7 +116,7 @@ def make_env_config(
     return EnvConfig(
         room=gs_schema,
         grpc=ServerConfig(host=grpc_host, port=grpc_port),
-        allocator=AllocatorConfig(base_url=f"{allocator_host}:{allocator_port}"),
+        allocator=AllocatorConfig(base_url=f"http://{allocator_host}:{allocator_port}"),
     )
 
 

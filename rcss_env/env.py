@@ -71,7 +71,7 @@ class RCSSEnv(MultiAgentEnv):
         self.__loop = None
 
         # gRPC components (lazily initialised)
-        self.__servicer: GameServicer = None
+        self.__servicer: GameServicer | None = None
         self.__grpc_server: Any = None
         self.__grpc_loop: Any = None  # asyncio event loop for the gRPC aio server
 
@@ -99,7 +99,12 @@ class RCSSEnv(MultiAgentEnv):
         self.__servicer = GameServicer()
 
         for unum in self.agent_team_unums:
-            self.__servicer.register(unum)
+            self.__get_servicer().register(unum)
+
+    def __get_servicer(self) -> GameServicer:
+        if self.__servicer is None:
+            raise RuntimeError("GameServicer not initialized")
+        return self.__servicer
 
     @property
     def _agent_side(self) -> str:
@@ -126,7 +131,7 @@ class RCSSEnv(MultiAgentEnv):
         self._start_grpc_server()
 
         # 3. Flush servicer internal buffers
-        self.__servicer.reset()
+        self.__get_servicer().reset()
 
         # 4. Request a new room from the allocator
         schema = self.config.room
@@ -171,7 +176,7 @@ class RCSSEnv(MultiAgentEnv):
             unum: Action.from_space(action).get_action()
             for unum, action in action_dict.items()
         }
-        self.__servicer.send_actions(actions)
+        self.__get_servicer().send_actions(actions)
 
         # 2. Collect new states and compare with the previous step for rewards
         prev_states = self.__prev_states
@@ -207,7 +212,7 @@ class RCSSEnv(MultiAgentEnv):
         from .grpc_srv import serve
 
         self.__grpc_server, self.__grpc_loop = serve(
-            self.__servicer,
+            self.__get_servicer(),
             port=self.config.grpc.port,
             block=False,
         )
@@ -262,7 +267,7 @@ class RCSSEnv(MultiAgentEnv):
     def __collect_states(self, timeout_s: float = 30.0) -> dict[int, pb2.State]:
         """Block until all registered agents have sent their State."""
         try:
-            states = self.__servicer.fetch_states(timeout=timeout_s)
+            states = self.__get_servicer().fetch_states(timeout=timeout_s)
             return states
         except Exception as exc:
             logger.warning("Timeout fetching states for world models: %s", exc)
