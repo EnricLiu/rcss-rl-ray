@@ -1,17 +1,20 @@
 """Normalised 2-D coordinate in the range [0, 1]."""
 
-from dataclasses import dataclass
+from pydantic import field_validator
+
+from ._base import SchemaModel
 
 
-@dataclass
-class Position:
+
+class Position(SchemaModel):
     """Normalised pitch position. Both x and y must be in [0.0, 1.0]."""
 
     x: float
     y: float
 
-    def __post_init__(self):
-        if not (0.0 <= self.x <= 1.0):
-            raise ValueError("x must be in the range [0, 1]")
-        if not (0.0 <= self.y <= 1.0):
-            raise ValueError("y must be in the range [0, 1]")
+    @field_validator("x", "y")
+    @classmethod
+    def _validate_unit_interval(cls, value: float, info) -> float:
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"{info.field_name} must be in the range [0, 1]")
+        return value

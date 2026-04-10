@@ -1,10 +1,9 @@
 """Referee configuration."""
 
-from dataclasses import dataclass
+from ._base import SchemaModel
 
 
-@dataclass
-class RefereeSchema:
+class RefereeSchema(SchemaModel):
     """Referee toggle. When *enable* is True the built-in simulation referee is active."""
 
-    enable: bool = False
+    enable: bool = True

@@ -1,154 +1,106 @@
-"""Policy type hierarchy.
-
-Defines the policy kind enums (Bot / Agent) and concrete policy dataclasses:
-- BotPolicy: scripted bot policy
-- AgentPolicy: base class for RL-trained agent policies
-- SspAgentPolicy: agent policy that communicates via gRPC with a SoccerSimulationProxy sidecar
-"""
-
 from __future__ import annotations
 
+from ipaddress import IPv4Address
 from enum import Enum
-from typing import Any
-from dataclasses import dataclass
+from typing import Any, Literal, cast
+
+from pydantic import Field, IPvAnyAddress, field_validator
+
+from ._base import SchemaModel
 
 
-class PolicyKind(Enum):
+class PolicyKind(str, Enum):
     """Top-level policy kind: Bot (scripted) or Agent (RL-trained)."""
-
     Bot = "bot"
     Agent = "agent"
 
 
-class PolicyAgentKind(Enum):
-    """Agent policy sub-type. Currently only Ssp (SoccerSimulationProxy) is supported."""
-
+class PolicyAgentKind(str, Enum):
+    """Agent policy subtype. Currently only Ssp (SoccerSimulationProxy) is supported."""
     Ssp = "ssp"
 
 
-@dataclass
-class Policy:
+def _validate_policy_image(image: str) -> str:
+    if image != "*" and "/" not in image:
+        raise ValueError(r"Invalid policy name, should be in pattern /^\w+/(\w+|\*):?\w*?$/")
+    return image
+
+
+class Policy(SchemaModel):
     """Base policy class.
 
     Attributes:
         kind: Policy kind (Bot / Agent).
         image: Container image name for this policy.
     """
-
     kind: PolicyKind
     image: str
 
-    def __post_init__(self):
-        if not self.image:
-            raise ValueError("image must be provided for Policy")
+    @field_validator("image")
+    @classmethod
+    def _validate_image(cls, value: str) -> str:
+        return _validate_policy_image(value)
 
     @staticmethod
-    def parse(maybe_policy: dict[str, Any]) -> Policy:
-        """Parse a dictionary into the appropriate Policy subclass.
+    def helios_base() -> BotPolicy:
+        return BotPolicy(image="HELIOS/helios-base")
 
-        Dispatches to BotPolicy or AgentPolicy parsing based on the ``kind`` field.
-        """
-        kind_str = maybe_policy.get("kind")
-        image = maybe_policy.get("image")
+    @staticmethod
+    def parse(maybe_policy: dict[str, Any] | Policy) -> BotPolicy | SspAgentPolicy:
+        if isinstance(maybe_policy, (BotPolicy, SspAgentPolicy)):
+            return maybe_policy
+        if isinstance(maybe_policy, Policy):
+            maybe_policy = maybe_policy.model_dump()
+        if not isinstance(maybe_policy, dict):
+            raise TypeError("policy must be a mapping or Policy instance")
 
-        try:
-            kind = PolicyKind(kind_str)
-        except Exception:
-            raise ValueError(f"Unknown policy kind: {kind_str}, expected one of {[e.value for e in PolicyKind]}")
+        kind = maybe_policy.get("kind")
+        if kind in {PolicyKind.Bot, PolicyKind.Bot.value}:
+            return BotPolicy.model_validate(maybe_policy)
+        if kind in {PolicyKind.Agent, PolicyKind.Agent.value}:
+            return cast(SspAgentPolicy, AgentPolicy.parse(maybe_policy))
 
-        policy = Policy(kind=kind, image=image)
-        match kind:
-            case PolicyKind.Bot:
-                return BotPolicy.parse(policy)
-            case PolicyKind.Agent:
-                maybe_agent = maybe_policy
-                return AgentPolicy.parse(policy, maybe_agent)
-
-            case _:
-                raise ValueError(f"Unsupported policy kind: {kind}")
+        raise ValueError(f"Unknown policy kind: {kind}, expected one of {[e.value for e in PolicyKind]}")
 
 
-@dataclass
 class BotPolicy(Policy):
-    """Scripted bot policy. ``kind`` must be :attr:`PolicyKind.Bot`."""
-
-    def __post_init__(self):
-        if self.kind != PolicyKind.Bot:
-            raise ValueError("kind must be 'bot' for BotPolicy")
+    kind: Literal[PolicyKind.Bot] = PolicyKind.Bot
 
     @staticmethod
-    def parse(policy: Policy) -> BotPolicy:
-        return BotPolicy(kind=policy.kind, image=policy.image)
+    def parse(policy: Policy | dict[str, Any]) -> BotPolicy:
+        if isinstance(policy, BotPolicy):
+            return policy
+        if isinstance(policy, Policy):
+            policy = policy.model_dump()
+        return BotPolicy.model_validate(policy)
 
 
-@dataclass
 class AgentPolicy(Policy):
-    """Base class for RL agent policies, carrying an agent sub-type field.
-
-    Attributes:
-        agent: Agent sub-type enum (e.g. Ssp).
-    """
-
     agent: PolicyAgentKind
 
-    def __post_init__(self):
-        if self.kind != PolicyKind.Agent:
-            raise ValueError("kind must be 'agent' for AgentPolicy")
-        if not self.agent:
-            raise ValueError("agent must be provided for AgentPolicy")
+    kind: Literal[PolicyKind.Agent] = PolicyKind.Agent
 
     @staticmethod
-    def parse(policy: Policy, maybe_agent_policy: dict[str, Any]) -> AgentPolicy:
-        """Parse a dictionary into the appropriate AgentPolicy subclass.
+    def parse(policy: Policy | dict[str, Any], maybe_agent_policy: dict[str, Any] | None = None) -> SspAgentPolicy:
+        payload: Any = maybe_agent_policy if maybe_agent_policy is not None else policy
+        if isinstance(payload, SspAgentPolicy):
+            return payload
+        if isinstance(payload, Policy):
+            payload = payload.model_dump()
 
-        Creates a :class:`SspAgentPolicy` based on the ``agent`` field, or raises on
-        unknown agent kinds.
-        """
-        agent_str = maybe_agent_policy.get("agent")
-        try:
-            agent = PolicyAgentKind(agent_str)
-            match agent:
-                case PolicyAgentKind.Ssp:
-                    return SspAgentPolicy(
-                        kind=PolicyKind.Agent,
-                        image=policy.image,
-                        agent=agent,
-                        grpc_host=maybe_agent_policy.get("grpc_host"),
-                        grpc_port=maybe_agent_policy.get("grpc_port"),
-                    )
-                case _:
-                    raise ValueError(f"Unsupported agent kind: {agent}")
+        agent = payload.get("agent") if isinstance(payload, dict) else None
+        if agent in {PolicyAgentKind.Ssp, PolicyAgentKind.Ssp.value}:
+            return SspAgentPolicy.model_validate(payload)
 
-        except ValueError:
-            raise ValueError(f"Unknown agent kind: {agent_str}, expected one of {[e.value for e in PolicyAgentKind]}")
+        raise ValueError(f"Unknown agent kind: {agent}, expected one of {[e.value for e in PolicyAgentKind]}")
 
 
-@dataclass
 class SspAgentPolicy(AgentPolicy):
-    """SoccerSimulationProxy agent policy.
-
-    Carries additional gRPC connection info for communicating with the sidecar.
-
-    Attributes:
-        grpc_host: Sidecar gRPC host address.
-        grpc_port: Sidecar gRPC port (1-65535).
-    """
-
-    grpc_host: str
-    grpc_port: int
-
-    def __post_init__(self):
-        if self.agent != PolicyAgentKind.Ssp:
-            raise ValueError("agent must be 'ssp' for SspAgentPolicy")
-
-        if not self.grpc_host:
-            raise ValueError("grpc_host must be provided for SspAgentPolicy")
-        if not self.grpc_port:
-            raise ValueError("grpc_port must be provided for SspAgentPolicy")
-
-        if self.grpc_port <= 0 or self.grpc_port > 65535:
-            raise ValueError("grpc_port must be in the range 1-65535")
+    agent: Literal[PolicyAgentKind.Ssp] = PolicyAgentKind.Ssp
+    grpc_host: IPvAnyAddress | IPv4Address
+    grpc_port: int = Field(ge=1, le=65535)
 
     def grpc_addr(self) -> str:
         """Return the gRPC address as a ``host:port`` string."""
         return f"{self.grpc_host}:{self.grpc_port}"
+
