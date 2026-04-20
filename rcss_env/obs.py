@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from .grpc_srv import pb2
+from .grpc_srv.proto import pb2
 
 # Pitch and physics constants used for normalisation
 PITCH_HALF_LENGTH = 52.5

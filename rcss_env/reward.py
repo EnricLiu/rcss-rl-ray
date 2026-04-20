@@ -4,7 +4,7 @@ Computes a per-step reward from consecutive WorldModel frames.
 Current implementation: own goal scored +1, opponent goal scored -1.
 """
 
-from grpc_srv import pb2
+from .grpc_srv.proto import pb2
 
 
 def calculate(

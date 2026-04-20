@@ -24,9 +24,9 @@ from typing import Any, Literal
 
 from httpx import Client, Response
 
-from client.base.http import BaseApiClient, unwrap_response
-from client.fleet import FleetClient, FleetInfo
-from client.room import RoomClient
+from ..http import BaseApiClient, unwrap_response
+from ...fleet import FleetClient, FleetInfo
+from ...room import RoomClient
 from utils import retry
 from schema import GameServerSchema, SCHEMA_VERSION
 from config import AllocatorConfig
@@ -50,7 +50,7 @@ class AllocatorClient(BaseApiClient):
         client: Client | None = None,
     ) -> None:
         self.__cfg = config
-        super().__init__(config.base_url, config.timeout_s, client=client)
+        super().__init__(config, client=client)
 
     @property
     def config(self) -> AllocatorConfig:

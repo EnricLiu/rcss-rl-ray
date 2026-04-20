@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 from gymnasium import spaces
 
-from .grpc_srv import pb2
+from .grpc_srv.proto import pb2
 
 
 @dataclass

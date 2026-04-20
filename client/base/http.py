@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from httpx import Client, Response
 from pydantic import BaseModel, ConfigDict
 
-from ..config import ClientConfig
+
+class SupportsClientConfig(Protocol):
+    base_url: str
+    timeout_s: float
 
 
 class ClusterApiError(RuntimeError):
@@ -94,14 +97,14 @@ def unwrap_response(response: Response, *, expect_envelope: bool = True) -> Any:
 class BaseApiClient:
     def __init__(
         self,
-        config: ClientConfig,
+        config: SupportsClientConfig,
         client: Client | None = None,
     ) -> None:
         self.__config = config
         self._client = client or Client(base_url=config.base_url, timeout=config.timeout_s)
 
     @property
-    def config(self) -> ClientConfig:
+    def config(self) -> SupportsClientConfig:
         return self.__config
 
     @property

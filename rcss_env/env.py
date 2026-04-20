@@ -18,12 +18,14 @@ from ray.rllib.env import MultiAgentEnv
 from schema import GameServerSchema, TeamSide
 from config import EnvConfig
 
-import obs as observation
-import reward
+from . import obs as observation
+from . import reward
 
 from .action import Action
-from client import AllocatorClient, RoomClient
-from .grpc_srv import GameServicer, pb2
+from client.base.allocator import AllocatorClient
+from client.room import RoomClient
+from .grpc_srv.proto import pb2
+from .grpc_srv.servicer import GameServicer
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +224,7 @@ class RCSSEnv(MultiAgentEnv):
         """Start the gRPC server if it is not already running."""
         if self.__grpc_server is not None:
             return
-        from .grpc_srv import serve
+        from .grpc_srv.servicer import serve
 
         self.__grpc_server, self.__grpc_loop = serve(
             self.__get_servicer(),

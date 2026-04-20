@@ -8,10 +8,13 @@ from .model import (
 	TrainerTeamNamesResponse,
 )
 
+RcssServerClient = RcssClient
+
 __all__ = [
 	"MetricsConnectionInfo",
 	"MetricsStatusResponse",
 	"RcssClient",
+	"RcssServerClient",
 	"RcssTrainerClient",
 	"TrainerCheckBallResponse",
 	"TrainerCommandResult",

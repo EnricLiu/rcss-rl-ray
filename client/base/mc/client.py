@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Literal, override
+from typing import Literal, override
 
 from httpx import Client
 
-from client.base.http import BaseApiClient, dump_json_payload
+from ..http import BaseApiClient
 from .model import MatchStatusResponse, MatchTeamInfo
 from .config import MatchComposerConfig
 
@@ -12,10 +12,18 @@ from .config import MatchComposerConfig
 class MatchComposerClient(BaseApiClient):
     def __init__(
         self,
-        config: MatchComposerConfig,
+        config: MatchComposerConfig | str,
+        *,
+        timeout: float = 10,
         client: Client | None = None,
     ) -> None:
-        super().__init__(config, client=client)
+        if isinstance(config, str):
+            cfg: MatchComposerConfig = MatchComposerConfig(base_url=config, timeout_s=timeout)
+        else:
+            cfg = config
+
+        self.__config: MatchComposerConfig = cfg
+        super().__init__(cfg, client=client)
 
     @override
     @property

@@ -1,7 +1,8 @@
-from . import TrainerCommandResult
+from pydantic import BaseModel
+
 from ...config import ClientConfig
 
-class TrainerConfig(BaseModel):
+class TrainerConfig(ClientConfig):
     prefix: str = "/command/trainer"
 
     @property
@@ -84,28 +85,28 @@ class TrainerConfig(BaseModel):
     def url_team_names(self) -> str:
         return self.base_url + self.path_team_names
 
-class ControllerConfig(BaseModel):
+class ControllerConfig(ClientConfig):
     prefix: str = "/control"
 
-    path_shutdown: str = "/shutdown"
+    path_shutdown: str = "/control/shutdown"
     @property
     def url_shutdown(self) -> str:
         return self.base_url + self.path_shutdown
 
-class MetricsConfig(BaseModel):
+class MetricsConfig(ClientConfig):
     prefix: str = "/metrics"
 
-    path_status: str = "/status"
+    path_status: str = "/metrics/status"
     @property
     def url_status(self) -> str:
         return self.base_url + self.path_status
 
-    path_health: str = "/health"
+    path_health: str = "/metrics/health"
     @property
     def url_health(self) -> str:
         return self.base_url + self.path_health
 
-    path_conn: str = "/conn"
+    path_conn: str = "/metrics/conn"
     @property
     def url_conn(self) -> str:
         return self.base_url + self.path_conn

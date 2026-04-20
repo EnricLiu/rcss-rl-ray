@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from httpx import Client
 
-from client.base.http import BaseApiClient
+from ..http import BaseApiClient
 
 from .config import RcssConfig, TrainerConfig
 from .model import (
@@ -48,7 +48,7 @@ class RcssTrainerClient:
         payload = self._command(self.config.path_check_ball)
         return TrainerCheckBallResponse.model_validate(payload)
 
-    def ear(self, mode: str) -> TrainerCommandResult:
+    def ear(self, mode: Literal["on", "off"]) -> TrainerCommandResult:
         payload = self._command(
             self.config.path_ear,
             TrainerEarRequest(mode=mode).model_dump(
@@ -59,7 +59,7 @@ class RcssTrainerClient:
         )
         return TrainerCommandResult.model_validate(payload)
 
-    def eye(self, mode: str) -> TrainerCommandResult:
+    def eye(self, mode: Literal["on", "off"]) -> TrainerCommandResult:
         payload = self._command(
             self.config.path_eye,
             TrainerEarRequest(mode=mode).model_dump(
@@ -105,11 +105,19 @@ class RcssTrainerClient:
 class RcssClient(BaseApiClient):
     def __init__(
         self,
-        config: RcssConfig,
+        config: RcssConfig | str,
+        *,
+        timeout: float = 10,
         client: Client | None = None,
     ) -> None:
-        super().__init__(config, client=client)
-        self._trainer = RcssTrainerClient(config.trainer, self)
+        if isinstance(config, str):
+            cfg: RcssConfig = RcssConfig(base_url=config, timeout_s=timeout)
+        else:
+            cfg = config
+
+        self.__config: RcssConfig = cfg
+        super().__init__(cfg, client=client)
+        self._trainer = RcssTrainerClient(cfg.trainer, self)
 
     @property
     def config(self) -> RcssConfig:
@@ -122,7 +130,7 @@ class RcssClient(BaseApiClient):
     def shutdown(self, *, force: bool = True) -> None:
         self._request_payload(
             "POST",
-            self.config.control.shutdown,
+            self.config.control.path_shutdown,
             json=ControlShutdownRequest(force=force),
         )
 

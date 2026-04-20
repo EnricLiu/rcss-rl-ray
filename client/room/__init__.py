@@ -1,12 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
-from ..base import MatchComposerClient, RcssClient
-from ..config import ClientConfig
 from .info import RoomInfo
 
 if TYPE_CHECKING:
-    from ..base import AllocatorClient
+    from ..base.allocator import AllocatorClient
+    from ..base.mc import MatchComposerClient
+    from ..base.rcss import RcssClient
 
 
 class RoomClient:
@@ -35,19 +35,25 @@ class RoomClient:
     @property
     def rcss(self) -> RcssClient:
         if self.__rcss is None:
+            from ..base.rcss import RcssClient
+
             self.__rcss = RcssClient(
                 self.info.base_url_rcss,
                 timeout=self.client.timeout,
             )
+        assert self.__rcss is not None
         return self.__rcss
 
     @property
     def mc(self) -> MatchComposerClient:
         if self.__mc is None:
+            from ..base.mc import MatchComposerClient
+
             self.__mc = MatchComposerClient(
                 self.info.base_url_mc,
                 timeout=self.client.timeout,
             )
+        assert self.__mc is not None
         return self.__mc
 
     def release(self, *, force: bool = True) -> None:
