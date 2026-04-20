@@ -12,6 +12,7 @@ from pydantic import AliasChoices, Field
 
 from ._base import SchemaModel
 
+SCHEMA_VERSION: int = 1
 
 class GameServerSchema(SchemaModel):
     """Parameters that control the RCSS environment.
@@ -32,3 +33,4 @@ class GameServerSchema(SchemaModel):
     init_state: RoomInitState = Field(default_factory=RoomInitState)
     env: dict[str, str] | None = None
     log: bool = False
+

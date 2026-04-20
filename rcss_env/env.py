@@ -22,7 +22,7 @@ import obs as observation
 import reward
 
 from .action import Action
-from .allocator import AllocatorClient
+from client import AllocatorClient, RoomClient
 from .grpc_srv import GameServicer, pb2
 
 logger = logging.getLogger(__name__)
@@ -70,14 +70,14 @@ class RCSSEnv(MultiAgentEnv):
 
         self.__loop = None
 
-        # gRPC components (lazily initialised)
+        # gRPC components (lazily initialized)
         self.__servicer: GameServicer | None = None
         self.__grpc_server: Any = None
         self.__grpc_loop: Any = None  # asyncio event loop for the gRPC aio server
 
-        # Allocator client and current room id
-        self.__allocator: Any = None
-        self.__room: str | None = None
+        # Allocator client and current room
+        self.__allocator: AllocatorClient | None = None
+        self.__room: RoomClient | None = None
 
         # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
@@ -92,6 +92,24 @@ class RCSSEnv(MultiAgentEnv):
     def schema(self) -> GameServerSchema:
         """Return the RoomSchema used by this environment."""
         return self.config.room
+
+    @property
+    def allocator(self) -> AllocatorClient:
+        if self.__allocator is None:
+            raise RuntimeError("AllocatorClient not initialized")
+        return self.__allocator
+
+    @property
+    def room(self) -> RoomClient:
+        if self.__room is None:
+            raise RuntimeError("RoomClient not initialized")
+        return self.__room
+
+    def has_room(self) -> bool:
+        return self.__room is not None
+
+    def has_allocator(self) -> bool:
+        return self.__allocator is not None
 
     def _setup(self) -> None:
         """Initialize the allocator client and gRPC servicer, and register all agent unums."""
@@ -136,17 +154,12 @@ class RCSSEnv(MultiAgentEnv):
         # 4. Request a new room from the allocator
         schema = self.config.room
         try:
-            response = self.__allocator.request_room(schema)
+            room = self.allocator.request_room(schema)
         except RuntimeError as exc:
             raise gymnasium.error.ResetNeeded(
                 "Cannot allocate simulation room"
             ) from exc
-        room_id = response.get("room_id")
-        if not room_id:
-            raise gymnasium.error.ResetNeeded(
-                f"Allocator did not return a valid 'room_id'. Response: {response!r}"
-            )
-        self.__room = room_id
+        self.__room = room
 
         # 5. Wait for all agent sidecars to send their initial states
         states = self.__collect_states()
@@ -239,11 +252,11 @@ class RCSSEnv(MultiAgentEnv):
 
     def _cleanup_room(self) -> None:
         """Release the currently allocated room via the allocator."""
-        if self.__room and self.__allocator is not None:
+        if self.has_room():
             try:
-                self.__allocator.release_room(self.__room)
+                self.room.release()
             except Exception as exc:
-                logger.warning("Failed to release room %s: %s", self.__room, exc)
+                logger.warning("Failed to release room %s: %s", self.room.info.name, exc)
             self.__room = None
 
     # ------------------------------------------------------------------
