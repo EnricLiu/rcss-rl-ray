@@ -86,7 +86,7 @@ def make_default_room_schema(
             policy=BotPolicy(kind=PolicyKind.Bot, image=bot_image),
             goalie=(i == 1),
         )
-        for i in range(1, 12)
+        for i in range(1, num_agents + 1)
     ]
 
     right_team = TeamSchema(
@@ -106,7 +106,7 @@ def make_env_config(
     grpc_host: IPv4Address = IPv4Address('127.0.0.1'),
     grpc_port: int = 50051,
     allocator_host: str = "localhost",
-    allocator_port: int = 8080,
+    allocator_port: int = 5555,
     gs_schema: GameServerSchema = None,
 ) -> EnvConfig:
     """Assemble an :class:`EnvConfig` from connection parameters."""

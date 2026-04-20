@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...config import ClientConfig
 
@@ -115,9 +115,9 @@ class MetricsConfig(ClientConfig):
 class RcssConfig(ClientConfig):
     path_room_alloc: str = "/gs/allocate"
 
-    trainer: TrainerConfig = TrainerConfig(prefix="/command/trainer")
-    control: ControllerConfig = ControllerConfig(prefix="/control")
-    metrics: MetricsConfig = MetricsConfig(prefix="/metrics")
+    trainer: TrainerConfig = Field(default_factory=lambda: TrainerConfig(base_url="", prefix="/command/trainer"))
+    control: ControllerConfig = Field(default_factory=lambda: ControllerConfig(base_url="", prefix="/control"))
+    metrics: MetricsConfig = Field(default_factory=lambda: MetricsConfig(base_url="", prefix="/metrics"))
 
     @property
     def url_room_alloc(self) -> str:
