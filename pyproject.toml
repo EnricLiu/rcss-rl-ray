@@ -16,6 +16,9 @@ dependencies = [
     "pydantic>=2.12.5",
 ]
 
+[tool.uv]
+offline = true
+
 [tool.uv.sources]
 torch = [
     { index = "torch-cpu" },

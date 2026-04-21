@@ -98,7 +98,7 @@ def make_default_room_schema(
     return GameServerSchema(
         teams=TeamsSchema(left=left_team, right=right_team),
         stopping=StoppingEvents(time_up=time_up),
-        referee=RefereeSchema(enable=True),
+        referee=RefereeSchema(enable=True), log=True,
     )
 
 
