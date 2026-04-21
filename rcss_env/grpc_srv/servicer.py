@@ -62,8 +62,6 @@ class GameServicer(pb2_grpc.GameServicer):
         """
         self._loop = loop
 
-        self.reset()
-
     def register(self, unum: int) -> None:
         """Register a player unum, creating its state and action queues."""
         self._states_queues[unum] = asyncio.Queue(maxsize=1)
@@ -196,19 +194,23 @@ class GameServicer(pb2_grpc.GameServicer):
 
     async def __fetch_states(self, timeout: float) -> dict[int, pb2.State]:
         """Await states from all registered unums' output queues."""
-        unums = self._states_queues.keys()
+        queue_items = list(self._states_queues.items())
+        if not queue_items:
+            return self._states.copy()
+
         tasks = [
             asyncio.wait_for(queue.get(), timeout=timeout)
-            for queue in self._states_queues.values()
+            for _, queue in queue_items
         ]
 
         res = await asyncio.gather(*tasks, return_exceptions=True)
-        for unum, item in zip(unums, res):
+        for (unum, _), item in zip(queue_items, res):
             if isinstance(item, Exception):
                 self.unregister(unum)
                 logger.error(
-                    "Timeout waiting for state for unum=%d; unregistered",
+                    "Timeout/error waiting for state for unum=%d; unregistered (%s)",
                     unum,
+                    type(item).__name__,
                 )
                 continue
 
@@ -299,13 +301,15 @@ class GameServicer(pb2_grpc.GameServicer):
         """Return a copy of all stored PlayerType definitions."""
         return dict(self._player_types)
 
-    def reset(self) -> None:
-        """Clear all internal state and re-register previously known unums."""
-        unums = self._batcher.unums()
+    async def __reset_runtime(self) -> None:
+        """Reset batching/runtime state while preserving registered unums."""
+        unums = tuple(self._batcher.unums())
+
+        await self._batcher.reset()
+
         self._states.clear()
         self._states_queues.clear()
         self._action_queues.clear()
-        self._batcher.reset()
 
         for unum in unums:
             self.register(unum)
@@ -314,6 +318,28 @@ class GameServicer(pb2_grpc.GameServicer):
         self._player_params = None
         self._player_types = {}
         self._debug_mode = False
+
+        self._batcher.run()
+
+    def reset(self) -> None:
+        """Clear all internal state and re-register previously known unums."""
+        if self._loop is None:
+            unums = tuple(self._batcher.unums())
+            self._batcher = BatchQueue()
+            self._states.clear()
+            self._states_queues.clear()
+            self._action_queues.clear()
+
+            for unum in unums:
+                self.register(unum)
+
+            self._server_params = None
+            self._player_params = None
+            self._player_types = {}
+            self._debug_mode = False
+            return
+
+        self.__run_coro(self.__reset_runtime())
 
 
 # ------------------------------------------------------------------

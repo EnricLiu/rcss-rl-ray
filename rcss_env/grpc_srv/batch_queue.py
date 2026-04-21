@@ -48,11 +48,11 @@ class BatchQueue[StateTy]:
             try: await asyncio.wait_for(self.__task, timeout=self.__reset_timeout_s)
             except asyncio.TimeoutError:
                 logging.warning("Timeout while waiting for reset event acknowledgment")
-            finally:
-                self.__task = None
+        self.__task = None
 
         self.__unums.clear()
         self.__states.clear()
+        self.__queues.clear()
         self.__reset_event = Queue(maxsize=1)
         self.__update_event = Queue(maxsize=1)
         self.__last_timestep = -1
@@ -64,7 +64,7 @@ class BatchQueue[StateTy]:
 
     def unregister(self, unum: int) -> Queue[tuple[int, StateTy]] | None:
         """Remove a unum from the batch set and return its queue (if any)."""
-        self.__unums.remove(unum)
+        self.__unums.discard(unum)
         return self.__queues.pop(unum, None)
 
     def unums(self) -> frozenset[int]:
@@ -125,8 +125,10 @@ class BatchQueue[StateTy]:
 
     def run(self):
         """Start the async dispatch loop as an asyncio task."""
-        if self.__task is not None:
+        if self.__task is not None and not self.__task.done():
             raise RuntimeError("BatchQueue is already running")
+
+        self.__task = None
 
         self.__task = asyncio.create_task(self.__run())
 

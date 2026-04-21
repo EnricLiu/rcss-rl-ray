@@ -155,6 +155,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 	}
 
 	try:
+		print("version:", env.allocator.fleet_get_template_version())
 		result["allocator_health"] = env.allocator.health_check()
 		result["allocator_ready"] = env.allocator.readiness_check()
 
@@ -296,7 +297,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 	)
 	parser.add_argument("--grpc-port", type=int, default=50051)
 	parser.add_argument("--allocator-host", type=str, default="rcss-env-allocator.rcss-gateway-dev.svc.cluster.local")
-	parser.add_argument("--allocator-port", type=int, default=5555)
+	parser.add_argument("--allocator-port", type=int, default=80)
 
 	parser.add_argument("--num-agents", type=int, default=1)
 	parser.add_argument("--steps", type=int, default=1)
