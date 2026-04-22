@@ -628,9 +628,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 	parser.add_argument("--allocator-host", type=str, default="rcss-env-allocator.rcss-gateway-dev.svc.cluster.local")
 	parser.add_argument("--allocator-port", type=int, default=80)
 
-	parser.add_argument("--num-agents", type=int, default=1)
-	parser.add_argument("--episodes", type=int, default=1)
-	parser.add_argument("--steps", type=int, default=1)
+	parser.add_argument("--num-agents", type=int, default=2)
+	parser.add_argument("--episodes", type=int, default=100)
+	parser.add_argument("--steps", type=int, default=6000)
 	parser.add_argument(
 		"--step-log-interval",
 		type=int,
