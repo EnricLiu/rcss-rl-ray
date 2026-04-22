@@ -6,6 +6,7 @@ import logging
 import traceback
 from collections.abc import Mapping, Sequence
 from ipaddress import IPv4Address
+from time import perf_counter
 from typing import Any, cast
 
 import numpy as np
@@ -65,6 +66,163 @@ def build_action_dict(env: RCSSEnv, active_agents: Sequence[int] | None = None) 
 	return {agent_id: env.action_spaces[agent_id].sample() for agent_id in agent_ids}
 
 
+def _safe_space_contains(space: Any, value: Any) -> bool | None:
+	if space is None:
+		return None
+	try:
+		return bool(space.contains(value))
+	except Exception:
+		return None
+
+
+def _record_contract_issues(
+	result: dict[str, Any],
+	scope: str,
+	issues: Sequence[str],
+) -> None:
+	if not issues:
+		return
+
+	result["contract_ok"] = False
+	global_issues = cast(list[dict[str, Any]], result.setdefault("contract_issues", []))
+	for issue in issues:
+		entry = {"scope": scope, "issue": issue}
+		if entry not in global_issues:
+			global_issues.append(entry)
+		logger.error("[contract:%s] %s", scope, issue)
+
+
+def evaluate_reset_contract(
+	env: RCSSEnv,
+	obs: Mapping[int, Any],
+	infos: Mapping[int, Any],
+) -> dict[str, Any]:
+	expected_agents = set(int(agent_id) for agent_id in env.agents)
+	obs_agents = set(int(agent_id) for agent_id in obs.keys())
+	info_agents = set(int(agent_id) for agent_id in infos.keys())
+	issues: list[str] = []
+
+	if not obs_agents:
+		issues.append("reset returned no observations")
+	if obs_agents != expected_agents:
+		issues.append(
+			f"reset obs agents mismatch: expected={sorted(expected_agents)}, got={sorted(obs_agents)}"
+		)
+	if info_agents != expected_agents:
+		issues.append(
+			f"reset info agents mismatch: expected={sorted(expected_agents)}, got={sorted(info_agents)}"
+		)
+
+	space_mismatches: list[int] = []
+	unknown_space_checks: list[int] = []
+	for agent_id, agent_obs in obs.items():
+		contains = _safe_space_contains(env.observation_spaces.get(agent_id), agent_obs)
+		if contains is False:
+			space_mismatches.append(int(agent_id))
+		elif contains is None:
+			unknown_space_checks.append(int(agent_id))
+
+	if space_mismatches:
+		issues.append(
+			f"reset observation payload does not match declared observation_space for agents={sorted(space_mismatches)}"
+		)
+	if unknown_space_checks:
+		issues.append(
+			f"reset observation_space.contains could not be evaluated for agents={sorted(unknown_space_checks)}"
+		)
+
+	return {
+		"ok": not issues,
+		"expected_agents": sorted(expected_agents),
+		"obs_agents": sorted(obs_agents),
+		"info_agents": sorted(info_agents),
+		"issues": issues,
+	}
+
+
+def evaluate_step_contract(
+	env: RCSSEnv,
+	obs: Mapping[int, Any],
+	rewards: Mapping[int, Any],
+	terminateds: Mapping[Any, Any],
+	truncateds: Mapping[Any, Any],
+	infos: Mapping[int, Any],
+) -> dict[str, Any]:
+	expected_agents = set(int(agent_id) for agent_id in env.agents)
+	obs_agents = set(int(agent_id) for agent_id in obs.keys())
+	reward_agents = set(int(agent_id) for agent_id in rewards.keys())
+	info_agents = set(int(agent_id) for agent_id in infos.keys())
+	issues: list[str] = []
+
+	if "__all__" not in terminateds:
+		issues.append("terminateds is missing __all__")
+	if "__all__" not in truncateds:
+		issues.append("truncateds is missing __all__")
+	if obs_agents != expected_agents:
+		issues.append(
+			f"step obs agents mismatch: expected={sorted(expected_agents)}, got={sorted(obs_agents)}"
+		)
+	if reward_agents != expected_agents:
+		issues.append(
+			f"step reward agents mismatch: expected={sorted(expected_agents)}, got={sorted(reward_agents)}"
+		)
+	if info_agents != expected_agents:
+		issues.append(
+			f"step info agents mismatch: expected={sorted(expected_agents)}, got={sorted(info_agents)}"
+		)
+
+	space_mismatches: list[int] = []
+	unknown_space_checks: list[int] = []
+	for agent_id, agent_obs in obs.items():
+		contains = _safe_space_contains(env.observation_spaces.get(agent_id), agent_obs)
+		if contains is False:
+			space_mismatches.append(int(agent_id))
+		elif contains is None:
+			unknown_space_checks.append(int(agent_id))
+
+	if space_mismatches:
+		issues.append(
+			f"step observation payload does not match declared observation_space for agents={sorted(space_mismatches)}"
+		)
+	if unknown_space_checks:
+		issues.append(
+			f"step observation_space.contains could not be evaluated for agents={sorted(unknown_space_checks)}"
+		)
+
+	return {
+		"ok": not issues,
+		"expected_agents": sorted(expected_agents),
+		"obs_agents": sorted(obs_agents),
+		"reward_agents": sorted(reward_agents),
+		"info_agents": sorted(info_agents),
+		"terminated_all": bool(terminateds.get("__all__")),
+		"truncated_all": bool(truncateds.get("__all__")),
+		"issues": issues,
+	}
+
+
+def determine_done_reason(
+	terminateds: Mapping[Any, Any],
+	truncateds: Mapping[Any, Any],
+	steps_completed: int,
+	steps_requested: int,
+) -> str:
+	if terminateds.get("__all__"):
+		return "terminated"
+	if truncateds.get("__all__"):
+		return "truncated"
+	if steps_completed >= steps_requested:
+		return "step_limit_reached"
+	return "incomplete"
+
+
+def extract_scoreboard(infos: Mapping[int, Any]) -> dict[str, Any] | None:
+	for info in infos.values():
+		if isinstance(info, Mapping) and isinstance(info.get("scores"), Mapping):
+			return json_safe(info["scores"])
+	return None
+
+
 def collect_room_diagnostics(env: RCSSEnv) -> dict[str, Any]:
 	diagnostics: dict[str, Any] = {
 		"room": json_safe(env.room.info),
@@ -102,6 +260,8 @@ def build_smoke_request(args: argparse.Namespace) -> dict[str, Any]:
 		"agent_image": args.agent_image,
 		"time_up": args.time_up,
 		"steps": args.steps,
+		"episodes": args.episodes,
+		"step_log_interval": args.step_log_interval,
 	}
 
 	if args.grpc_host:
@@ -121,6 +281,8 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 	agent_image = str(request["agent_image"])
 	time_up = int(request["time_up"])
 	steps = int(request["steps"])
+	episodes = int(request.get("episodes", 1))
+	step_log_interval = max(1, int(request.get("step_log_interval", 1)))
 
 	room_schema = make_default_room_schema(
 		num_agents=num_agents,
@@ -141,66 +303,231 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 	env = RCSSEnv(env_config)
 	result: dict[str, Any] = {
 		"success": False,
+		"contract_ok": True,
+		"contract_issues": [],
 		"grpc_host": grpc_host,
 		"grpc_port": grpc_port,
 		"allocator_base_url": env.config.allocator.base_url,
 		"agent_unums": list(env.agents),
-		"steps_requested": steps,
+		"steps_per_episode_requested": steps,
+		"episodes_requested": episodes,
 		"schema_summary": {
 			"agent_team": env.schema.teams.agent_team.name,
 			"left_team": env.schema.teams.left.name,
 			"right_team": env.schema.teams.right.name,
 			"time_up": env.schema.stopping.time_up,
 		},
+		"totals": {
+			"episodes_completed": 0,
+			"steps_completed": 0,
+			"terminated_episodes": 0,
+			"truncated_episodes": 0,
+			"step_limit_episodes": 0,
+			"reward_sum": 0.0,
+		},
+		"episodes": [],
 	}
+	current_phase = "bootstrap"
+	current_episode_idx: int | None = None
+	current_step_idx: int | None = None
+	current_episode_record: dict[str, Any] | None = None
 
 	try:
-		print("version:", env.allocator.fleet_get_template_version())
+		logger.warning(
+			"starting env durability smoke: grpc_host=%s grpc_port=%d episodes=%d steps_per_episode=%d num_agents=%d",
+			grpc_host,
+			grpc_port,
+			episodes,
+			steps,
+			num_agents,
+		)
+		current_phase = "allocator_probe"
+		allocator_version = env.allocator.fleet_get_template_version()
+		result["allocator_template_version"] = allocator_version
+		logger.warning("allocator template version: %s", allocator_version)
 		result["allocator_health"] = env.allocator.health_check()
 		result["allocator_ready"] = env.allocator.readiness_check()
+		logger.warning(
+			"allocator readiness: health=%s ready=%s",
+			result["allocator_health"],
+			result["allocator_ready"],
+		)
 
-		obs, infos = env.reset()
-		result["reset"] = {
-			"obs_agents": sorted(obs.keys()),
-			"obs_summary": summarize_observations(obs),
-			"infos": json_safe(infos),
-		}
-		result["post_reset_diagnostics"] = collect_room_diagnostics(env)
+		for episode_idx in range(1, episodes + 1):
+			current_episode_idx = episode_idx
+			current_step_idx = None
+			current_episode_record = {
+				"episode_index": episode_idx,
+				"status": "running",
+				"steps_requested": steps,
+				"step_log_interval": step_log_interval,
+			}
+			logger.warning("episode %d/%d: reset start", episode_idx, episodes)
 
-		step_records: list[dict[str, Any]] = []
-		active_agents: list[int] = [int(agent_id) for agent_id in sorted(obs.keys())] if obs else [int(agent_id) for agent_id in env.agents]
-		current_obs = obs
+			current_phase = "reset"
+			reset_started_at = perf_counter()
+			obs, infos = env.reset()
+			reset_duration_s = perf_counter() - reset_started_at
+			current_episode_record["reset_duration_s"] = round(reset_duration_s, 6)
+			current_episode_record["reset"] = {
+				"obs_agents": sorted(obs.keys()),
+				"obs_summary": summarize_observations(obs),
+				"infos": json_safe(infos),
+			}
 
-		for step_idx in range(steps):
-			actions = build_action_dict(env, active_agents)
-			next_obs, rewards, terminateds, truncateds, next_infos = env.step(actions)
-			step_records.append(
-				{
+			reset_contract = evaluate_reset_contract(env, obs, infos)
+			current_episode_record["reset_contract"] = reset_contract
+			_record_contract_issues(result, f"episode_{episode_idx}.reset", reset_contract["issues"])
+
+			logger.warning(
+				"episode %d/%d: reset done in %.3fs obs_agents=%s",
+				episode_idx,
+				episodes,
+				reset_duration_s,
+				sorted(obs.keys()),
+			)
+
+			current_phase = "post_reset_diagnostics"
+			current_episode_record["post_reset_diagnostics"] = collect_room_diagnostics(env)
+			logger.warning(
+				"episode %d/%d: room=%s rcss=%s mc=%s",
+				episode_idx,
+				episodes,
+				env.room.info.name,
+				env.room.info.base_url_rcss,
+				env.room.info.base_url_mc,
+			)
+
+			step_records: list[dict[str, Any]] = []
+			step_latencies_s: list[float] = []
+			total_reward_sum = 0.0
+			active_agents: list[int] = [int(agent_id) for agent_id in sorted(obs.keys())] if obs else [int(agent_id) for agent_id in env.agents]
+			done_reason = "step_limit_reached"
+			last_infos: Mapping[int, Any] = infos
+
+			for step_idx in range(steps):
+				current_phase = "step"
+				current_step_idx = step_idx + 1
+				actions = build_action_dict(env, active_agents)
+				step_started_at = perf_counter()
+				next_obs, rewards, terminateds, truncateds, next_infos = env.step(actions)
+				step_duration_s = perf_counter() - step_started_at
+				step_latencies_s.append(step_duration_s)
+				step_reward_sum = float(sum(rewards.values()))
+				total_reward_sum += step_reward_sum
+				last_infos = next_infos
+
+				step_contract = evaluate_step_contract(env, next_obs, rewards, terminateds, truncateds, next_infos)
+				_record_contract_issues(result, f"episode_{episode_idx}.step_{step_idx + 1}", step_contract["issues"])
+
+				step_record = {
 					"step_index": step_idx + 1,
+					"duration_s": round(step_duration_s, 6),
 					"action_agents": sorted(actions.keys()),
-					"reward_sum": float(sum(rewards.values())),
+					"reward_sum": step_reward_sum,
 					"rewards": json_safe(rewards),
 					"terminateds": json_safe(terminateds),
 					"truncateds": json_safe(truncateds),
 					"infos": json_safe(next_infos),
 					"obs_summary": summarize_observations(next_obs),
+					"contract": step_contract,
 				}
+				step_records.append(step_record)
+
+				should_log_step = (
+					(step_idx + 1) == 1
+					or (step_idx + 1) % step_log_interval == 0
+					or bool(terminateds.get("__all__"))
+					or bool(truncateds.get("__all__"))
+				)
+				if should_log_step:
+					logger.warning(
+						"episode %d/%d step %d/%d: duration=%.3fs reward_sum=%.3f terminated=%s truncated=%s obs_agents=%s",
+						episode_idx,
+						episodes,
+						step_idx + 1,
+						steps,
+						step_duration_s,
+						step_reward_sum,
+						bool(terminateds.get("__all__")),
+						bool(truncateds.get("__all__")),
+						sorted(next_obs.keys()),
+					)
+
+				active_agents = [int(agent_id) for agent_id in sorted(next_obs.keys())] if next_obs else active_agents
+				done_reason = determine_done_reason(terminateds, truncateds, step_idx + 1, steps)
+
+				if terminateds.get("__all__") or truncateds.get("__all__"):
+					break
+
+			current_step_idx = None
+			steps_completed = len(step_records)
+			current_episode_record["steps"] = step_records
+			current_episode_record["steps_completed"] = steps_completed
+			current_episode_record["reward_sum_total"] = total_reward_sum
+			current_episode_record["done_reason"] = done_reason
+			current_episode_record["final_scores"] = extract_scoreboard(last_infos)
+			current_episode_record["step_latency_s"] = {
+				"min": round(min(step_latencies_s), 6) if step_latencies_s else None,
+				"max": round(max(step_latencies_s), 6) if step_latencies_s else None,
+				"avg": round(sum(step_latencies_s) / len(step_latencies_s), 6) if step_latencies_s else None,
+			}
+			current_episode_record["status"] = "success"
+
+			if done_reason == "terminated":
+				result["totals"]["terminated_episodes"] += 1
+			elif done_reason == "truncated":
+				result["totals"]["truncated_episodes"] += 1
+			else:
+				result["totals"]["step_limit_episodes"] += 1
+
+			result["totals"]["episodes_completed"] += 1
+			result["totals"]["steps_completed"] += steps_completed
+			result["totals"]["reward_sum"] += total_reward_sum
+			cast(list[dict[str, Any]], result["episodes"]).append(current_episode_record)
+			logger.warning(
+				"episode %d/%d finished: steps_completed=%d done_reason=%s reward_sum=%.3f final_scores=%s",
+				episode_idx,
+				episodes,
+				steps_completed,
+				done_reason,
+				total_reward_sum,
+				current_episode_record["final_scores"],
 			)
-			current_obs = next_obs
-			active_agents = [int(agent_id) for agent_id in sorted(current_obs.keys())] if current_obs else active_agents
+			current_episode_record = None
 
-			if terminateds.get("__all__") or truncateds.get("__all__"):
-				break
-
-		result["steps"] = step_records
 		result["success"] = True
+		logger.warning(
+			"env durability smoke finished successfully: episodes_completed=%d steps_completed=%d contract_ok=%s",
+			result["totals"]["episodes_completed"],
+			result["totals"]["steps_completed"],
+			result["contract_ok"],
+		)
 		return result
 	except Exception as exc:  # pragma: no cover - exercised against live cluster
+		logger.error(
+			"env durability smoke failed: phase=%s episode=%s step=%s error=%s: %s",
+			current_phase,
+			current_episode_idx,
+			current_step_idx,
+			type(exc).__name__,
+			str(exc),
+		)
+		logger.exception("env durability smoke traceback")
 		result["error"] = {
 			"type": type(exc).__name__,
 			"message": str(exc),
 			"traceback": traceback.format_exc(),
 		}
+		result["failure_context"] = {
+			"phase": current_phase,
+			"episode_index": current_episode_idx,
+			"step_index": current_step_idx,
+		}
+		if current_episode_record is not None:
+			current_episode_record["status"] = "failed"
+			current_episode_record["failure_context"] = result["failure_context"]
+			cast(list[dict[str, Any]], result["episodes"]).append(current_episode_record)
 		if env.has_room():
 			try:
 				result["failure_room"] = json_safe(env.room.info)
@@ -209,8 +536,10 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 		return result
 	finally:
 		try:
+			logger.warning("closing env smoke resources")
 			env.close()
 		except Exception as exc:  # pragma: no cover - exercised against live cluster
+			logger.error("failed to close env smoke resources: %s: %s", type(exc).__name__, str(exc))
 			result["close_error"] = {
 				"type": type(exc).__name__,
 				"message": str(exc),
@@ -300,7 +629,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 	parser.add_argument("--allocator-port", type=int, default=80)
 
 	parser.add_argument("--num-agents", type=int, default=1)
+	parser.add_argument("--episodes", type=int, default=1)
 	parser.add_argument("--steps", type=int, default=1)
+	parser.add_argument(
+		"--step-log-interval",
+		type=int,
+		default=1,
+		help="Emit warning logs every N steps within each episode",
+	)
 	parser.add_argument("--time-up", type=int, default=200)
 	parser.add_argument("--bot-image", type=str, default="HELIOS/helios-base")
 	parser.add_argument("--agent-image", type=str, default="Cyrus2D/SoccerSimulationProxy")
