@@ -129,7 +129,7 @@ class GameServicer(pb2_grpc.GameServicer):
             )
             return pb2.PlayerActions()
 
-        actions = await self.__get_action(wm.self.id, request)
+        actions = await self.__get_action(wm.self.uniform_number, request)
         return actions or pb2.PlayerActions()
 
     async def GetCoachActions(
