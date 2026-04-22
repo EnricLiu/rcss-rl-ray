@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Protocol
@@ -7,6 +9,7 @@ from typing import Any, Protocol
 from httpx import Client, Response
 from pydantic import BaseModel, ConfigDict
 
+logger = logging.getLogger(__name__)
 
 class SupportsClientConfig(Protocol):
     base_url: str
@@ -122,10 +125,17 @@ class BaseApiClient:
         params: Mapping[str, Any] | None = None,
         expect_envelope: bool = True,
     ) -> Any:
+
+        logger.info(f"[{method}] -> {self.client.base_url}{path}, json: {json}, params: {params}")
         response = self.client.request(
             method,
             path,
             json=dump_json_payload(json),
             params=params,
         )
-        return unwrap_response(response, expect_envelope=expect_envelope)
+        logger.debug(f"[{method}] <- {self.client.base_url}{path}, response: {response.text}")
+
+        res = unwrap_response(response, expect_envelope=expect_envelope)
+        logger.info(f"[{method}] <- {self.client.base_url}{path}, resp payload: {res}")
+
+        return res
