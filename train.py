@@ -24,7 +24,8 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 
 from callbacks import RCSSCallbacks
-from config import EnvConfig, TrainConfig, ServerConfig, AllocatorConfig
+from client.base.allocator.config import AllocatorConfig
+from config import EnvConfig, TrainConfig, ServerConfig
 from models.fcnet import register as register_model
 from rcss_env import RCSSEnv
 from schema import (

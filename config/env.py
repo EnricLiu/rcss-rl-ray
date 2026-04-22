@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from client.base.allocator.config import AllocatorConfig
 from schema import GameServerSchema
 from .server import ServerConfig
-from .allocator import AllocatorConfig
 
 
 class EnvConfig(BaseModel):

@@ -29,7 +29,7 @@ from ...fleet import FleetClient, FleetInfo
 from ...room import RoomClient
 from utils import retry
 from schema import GameServerSchema, SCHEMA_VERSION
-from config import AllocatorConfig
+from .config import AllocatorConfig
 
 from .model import (
     DeleteDropFleetRequest,
@@ -46,7 +46,6 @@ class AllocatorClient(BaseApiClient):
     def __init__(
         self,
         config: AllocatorConfig,
-        *,
         client: Client | None = None,
     ) -> None:
         self.__cfg = config

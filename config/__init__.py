@@ -3,4 +3,3 @@
 from .env import EnvConfig
 from .train import TrainConfig
 from .server import ServerConfig
-from .allocator import AllocatorConfig
