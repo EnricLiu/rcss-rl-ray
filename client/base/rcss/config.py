@@ -1,9 +1,9 @@
-from pydantic import BaseModel, Field
+from typing import Any
 
 from ...config import ClientConfig
 
 class TrainerConfig(ClientConfig):
-    prefix: str = "/command/trainer"
+    prefix: str = "/trainer"
 
     @property
     def path_change_mode(self) -> str:
@@ -115,9 +115,24 @@ class MetricsConfig(ClientConfig):
 class RcssConfig(ClientConfig):
     path_room_alloc: str = "/gs/allocate"
 
-    trainer: TrainerConfig = Field(default_factory=lambda: TrainerConfig(base_url="", prefix="/command/trainer"))
-    control: ControllerConfig = Field(default_factory=lambda: ControllerConfig(base_url="", prefix="/control"))
-    metrics: MetricsConfig = Field(default_factory=lambda: MetricsConfig(base_url="", prefix="/metrics"))
+    __trainer: TrainerConfig = None
+    __control: ControllerConfig = None
+    __metrics: MetricsConfig = None
+
+    def model_post_init(self, context: Any, /) -> None:
+        self.__trainer = TrainerConfig(base_url=self.base_url, prefix="/trainer")
+        self.__control = ControllerConfig(base_url=self.base_url, prefix="/control")
+        self.__metrics = MetricsConfig(base_url=self.base_url, prefix="/metrics")
+
+    @property
+    def trainer(self) -> TrainerConfig:
+        return self.__trainer
+    @property
+    def control(self) -> ControllerConfig:
+        return self.__control
+    @property
+    def metrics(self) -> MetricsConfig:
+        return self.__metrics
 
     @property
     def url_room_alloc(self) -> str:
