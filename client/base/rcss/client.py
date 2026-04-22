@@ -30,7 +30,7 @@ class RcssTrainerClient:
         return self.__config
 
     def _command(self, path: str, payload: Any | None = None) -> Any:
-        body = [payload] if payload is not None else [None]
+        body = payload if payload is not None else dict()
         return self._api._request_payload("POST", path, json=body, )
 
     def change_mode(self, play_mode: str) -> TrainerCommandResult:

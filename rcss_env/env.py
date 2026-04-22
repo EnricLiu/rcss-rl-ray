@@ -163,6 +163,8 @@ class RCSSEnv(MultiAgentEnv):
             ) from exc
         self.__room = room
 
+        self.room.rcss.trainer.start()
+
         # 5. Wait for all agent sidecars to send their initial states
         states = self.__collect_states()
 
