@@ -213,18 +213,29 @@ class RCSSEnv(MultiAgentEnv):
         dict[int, dict[str, Any]],
     ]:
         """Execute one simulation step: send actions -> collect new states -> compute outputs."""
+        import time
         self.__step_count += 1
 
         # 1. Encode each agent's action to a protobuf message and send them
-        logger.warning(f"Step {self.__step_count}: sending actions for unums {sorted(action_dict.keys())}")
+        logger.warning("Step %d: gathering actions for unums=%s", self.__step_count, sorted(action_dict.keys()))
         actions = self.__gather_actions(action_dict)
-        logger.warning(f"Step {self.__step_count}: actions={actions}")
+
+        t0 = time.perf_counter()
+        logger.warning("Step %d: sending actions to servicer", self.__step_count)
         self.__get_servicer().send_actions(actions)
-        logger.warning(f"Step {self.__step_count}: actions sent to servicer")
+        t1 = time.perf_counter()
+        logger.warning("Step %d: actions sent in %.3fs", self.__step_count, t1 - t0)
 
         # 2. Collect new states and compare with the previous step for rewards
         self.__prev_states = self.__curr_states
+        logger.warning("Step %d: waiting for states from simulation", self.__step_count)
         curr_states = self.__collect_states()
+        t2 = time.perf_counter()
+        cycles = {u: s.world_model.cycle for u, s in curr_states.items() if s.world_model}
+        logger.warning(
+            "Step %d: states collected in %.3fs — unums=%s cycles=%s",
+            self.__step_count, t2 - t1, sorted(curr_states.keys()), cycles,
+        )
         self.__curr_states = curr_states
 
         rewards = {

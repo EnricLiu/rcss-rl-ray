@@ -30,6 +30,9 @@ STATE_SEND_TIMEOUT_S = 2
 ACTION_GET_TIMEOUT_S = 30
 ACTION_SEND_TIMEOUT_S = 2
 
+# Timeout for a single action queue put (prevents event-loop deadlock when queue is full)
+ACTION_PUT_TIMEOUT_S = 5.0
+
 
 class GameServicer(pb2_grpc.GameServicer):
     """Async gRPC servicer bridging SoccerSimulationProxy sidecars and the RL loop.
@@ -87,23 +90,26 @@ class GameServicer(pb2_grpc.GameServicer):
     async def __get_action(self, unum: int, state: pb2.State) -> pb2.PlayerActions | None:
         """Submit a state to the batcher and wait for the RL loop to provide actions."""
         action_q = self._action_queues.get(unum)
+        cycle = state.world_model.cycle if state.world_model else -1
 
         if action_q is None:
             logger.warning(
-                "GetPlayerActions from unregistered unum=%d; returning empty actions",
-                unum,
+                "GetPlayerActions from unregistered unum=%d cycle=%d; returning empty actions",
+                unum, cycle,
             )
             return None
 
         if not self._batcher.has(unum):
             self.unregister(unum)
             logger.error(
-                "Received state for unregistered unum=%d; unregistering and returning empty actions",
-                unum,
+                "Received state for batcher-unregistered unum=%d cycle=%d; unregistering and returning empty actions",
+                unum, cycle,
             )
             return None
 
+        logger.warning("__get_action: unum=%d cycle=%d — submitting to batcher", unum, cycle)
         await self._batcher.put(unum, state.world_model.cycle, state)
+        logger.warning("__get_action: unum=%d cycle=%d — waiting for action (timeout=%ds)", unum, cycle, ACTION_GET_TIMEOUT_S)
 
         try:
             actions = await asyncio.wait_for(
@@ -111,11 +117,15 @@ class GameServicer(pb2_grpc.GameServicer):
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "Timeout waiting for actions for unum=%d; returning empty actions",
-                unum,
+                "Timeout waiting for actions for unum=%d cycle=%d — "
+                "batcher_unums=%s action_q_size=%d; returning empty actions",
+                unum, cycle,
+                sorted(self._batcher.unums()),
+                action_q.qsize(),
             )
             return pb2.PlayerActions()
 
+        logger.warning("__get_action: unum=%d cycle=%d — action received", unum, cycle)
         return actions
 
     async def GetPlayerActions(
@@ -196,7 +206,11 @@ class GameServicer(pb2_grpc.GameServicer):
         """Await states from all registered unums' output queues."""
         queue_items = list(self._states_queues.items())
         if not queue_items:
+            logger.warning("__fetch_states: no state queues registered — returning cached states %s", sorted(self._states.keys()))
             return self._states.copy()
+
+        expected_unums = sorted(u for u, _ in queue_items)
+        logger.warning("__fetch_states: waiting for states from unums=%s timeout=%.1fs", expected_unums, timeout)
 
         tasks = [
             asyncio.wait_for(queue.get(), timeout=timeout)
@@ -208,15 +222,18 @@ class GameServicer(pb2_grpc.GameServicer):
             if isinstance(item, Exception):
                 self.unregister(unum)
                 logger.error(
-                    "Timeout/error waiting for state for unum=%d; unregistered (%s)",
-                    unum,
-                    type(item).__name__,
+                    "__fetch_states: timeout/error waiting for state from unum=%d (%s); "
+                    "unregistered. batcher_unums=%s",
+                    unum, type(item).__name__, sorted(self._batcher.unums()),
                 )
                 continue
 
             _, state = item
+            cycle = state.world_model.cycle if state.world_model else -1
+            logger.warning("__fetch_states: received state unum=%d cycle=%d", unum, cycle)
             self._states[unum] = state
 
+        logger.warning("__fetch_states: done — returning states for unums=%s", sorted(self._states.keys()))
         return self._states.copy()
 
     async def __send_action(
@@ -224,13 +241,30 @@ class GameServicer(pb2_grpc.GameServicer):
     ) -> None:
         """Put an action into the given unum's action queue."""
         action_q = self._action_queues.get(unum)
-        if action_q is None: raise RuntimeError(f"Player unum={unum} not registered")
-        await action_q.put(action)
+        if action_q is None:
+            raise RuntimeError(f"Player unum={unum} not registered")
+        if action_q.full():
+            logger.warning(
+                "__send_action: unum=%d action_queue is FULL (size=%d maxsize=%d) — "
+                "previous action was not consumed; this may block the event loop",
+                unum, action_q.qsize(), action_q.maxsize,
+            )
+        try:
+            await asyncio.wait_for(action_q.put(action), timeout=ACTION_PUT_TIMEOUT_S)
+            logger.warning("__send_action: unum=%d action enqueued", unum)
+        except asyncio.TimeoutError:
+            logger.error(
+                "__send_action: unum=%d timed out putting action (queue full after %.1fs); "
+                "sidecar may have disconnected",
+                unum, ACTION_PUT_TIMEOUT_S,
+            )
+            raise
 
     async def __send_actions(
         self, actions: dict[int, pb2.PlayerActions]
     ) -> set[int]:
         """Send actions to all specified unums concurrently."""
+        logger.warning("__send_actions: sending actions to unums=%s", sorted(actions.keys()))
         tasks = [
             self.__send_action(unum, action)
             for unum, action in actions.items()
@@ -240,13 +274,14 @@ class GameServicer(pb2_grpc.GameServicer):
         res = await asyncio.gather(*tasks, return_exceptions=True)
         for unum, r in zip(actions.keys(), res):
             if isinstance(r, RuntimeError):
-                logger.warning(f"Failed to send actions for unum={unum}: {r}")
+                logger.warning("__send_actions: failed to send action for unum=%d: %s", unum, r)
             elif isinstance(r, Exception):
                 self.unregister(unum)
-                logger.error(f"Error sending actions for unum={unum}, unregistered: {r}")
+                logger.error("__send_actions: error sending action for unum=%d, unregistered: %s", unum, r)
 
             ret.add(unum)
 
+        logger.warning("__send_actions: done, sent to unums=%s", sorted(ret))
         return ret
 
     # ------------------------------------------------------------------
@@ -304,6 +339,7 @@ class GameServicer(pb2_grpc.GameServicer):
     async def __reset_runtime(self) -> None:
         """Reset batching/runtime state while preserving registered unums."""
         unums = tuple(self._batcher.unums())
+        logger.warning("__reset_runtime: resetting servicer, preserving unums=%s", sorted(unums))
 
         await self._batcher.reset()
 
@@ -320,9 +356,11 @@ class GameServicer(pb2_grpc.GameServicer):
         self._debug_mode = False
 
         self._batcher.run()
+        logger.warning("__reset_runtime: complete, registered_unums=%s", sorted(self._batcher.unums()))
 
     def reset(self) -> None:
         """Clear all internal state and re-register previously known unums."""
+        logger.warning("GameServicer.reset: called, loop_bound=%s", self._loop is not None)
         if self._loop is None:
             unums = tuple(self._batcher.unums())
             self._batcher = BatchQueue()
