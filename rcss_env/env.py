@@ -159,6 +159,10 @@ class RCSSEnv(MultiAgentEnv):
         """Reset the environment: allocate a new simulation room and return initial observations."""
         super().reset(seed=seed, options=options)
 
+        # Clear episode-local caches up-front so a failed reset cannot leak the
+        # previous episode's state into the next one.
+        self.__reset_episode_state()
+
         # 1. Release the previous room
         self._cleanup_room()
 
@@ -166,7 +170,7 @@ class RCSSEnv(MultiAgentEnv):
         self._start_grpc_server()
 
         # 3. Flush servicer internal buffers
-        self.__get_servicer().reset()
+        self.__reset_servicer_state()
 
         # 4. Request a new room from the allocator
         schema = self.config.room
@@ -178,14 +182,16 @@ class RCSSEnv(MultiAgentEnv):
             ) from exc
         self.__room = room
 
-        self.room.rcss.trainer.start()
+        try:
+            self.room.rcss.trainer.start()
 
-        # 5. Wait for all agent sidecars to send their initial states
-        states = self.__collect_states()
+            # 5. Wait for all agent sidecars to send their initial states
+            states = self.__collect_states()
+        except Exception:
+            self._cleanup_room()
+            raise
 
         # 6. Build initial observations and info dicts
-        self.__step_count = 0
-        self.__prev_states = {}
         self.__curr_states = states
         obs = self.__states_to_obs(states)
         infos: dict[int, dict[str, Any]] = {unum: {} for unum in self.agent_team_unums}
@@ -315,7 +321,22 @@ class RCSSEnv(MultiAgentEnv):
             logger.warning("Timeout fetching states for world models: %s", exc)
             raise gymnasium.error.ResetNeeded(
                 "Failed to fetch states for world models, likely due to a communication issue with the simulation. "
-            )
+            ) from exc
+
+    def __reset_episode_state(self) -> None:
+        """Clear episode-local caches so reset failures do not leak prior state."""
+        self.__step_count = 0
+        self.__prev_states = {}
+        self.__curr_states = {}
+
+    def __reset_servicer_state(self) -> None:
+        """Reset the servicer and restore the authoritative set of agent unums."""
+        servicer = self.__get_servicer()
+        servicer.reset()
+
+        missing_unums = self.agent_team_unums.difference(servicer.unums)
+        for unum in sorted(missing_unums):
+            servicer.register(unum)
 
     def __states_to_obs(self, states: dict[int, pb2.State]) -> dict[int, dict[str, np.ndarray]]:
         """Convert states into masked observation payloads for each agent."""
