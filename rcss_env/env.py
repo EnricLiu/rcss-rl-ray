@@ -16,7 +16,7 @@ from gymnasium import spaces
 from ray.rllib.env import MultiAgentEnv
 
 from schema import GameServerSchema, TeamSide
-from config import EnvConfig
+from config import EnvConfig, BhvConfig
 
 from . import obs as observation
 from . import reward
@@ -89,6 +89,10 @@ class RCSSEnv(MultiAgentEnv):
     @property
     def config(self) -> EnvConfig:
         return self.__cfg
+
+    @property
+    def bhv(self) -> BhvConfig:
+        return self.config.bhv
 
     @property
     def schema(self) -> GameServerSchema:
@@ -189,10 +193,7 @@ class RCSSEnv(MultiAgentEnv):
         self.__step_count += 1
 
         # 1. Encode each agent's action to a protobuf message and send them
-        actions = {
-            unum: Action.from_space(action).get_action()
-            for unum, action in action_dict.items()
-        }
+        actions = self.__gather_actions(action_dict)
         self.__get_servicer().send_actions(actions)
 
         # 2. Collect new states and compare with the previous step for rewards
@@ -302,6 +303,22 @@ class RCSSEnv(MultiAgentEnv):
             for unum, s in states.items()
         }
         return obs
+
+    def __gather_actions(self, action_dict: dict[int, Any]) -> dict[int, pb2.PlayerActions]:
+        ret = {}
+        for unum, act in action_dict.items():
+            wm_opt = self.__prev_obs_wm(unum)
+
+            body_act = Action.from_space(act).get_action()
+            neck_act = self.bhv.neck.parse(wm_opt)
+            view_act = self.bhv.view.parse(wm_opt)
+
+            actions = (body_act, neck_act, view_act)
+            actions = pb2.PlayerActions(actions=actions)
+
+            ret[unum] = actions
+
+        return ret
 
     @staticmethod
     def __calc_reward(

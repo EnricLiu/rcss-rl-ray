@@ -74,7 +74,7 @@ class Action:
     def __get_action(self, cls, config: dict[str, Any]):
         pass
 
-    def get_action(self):
+    def get_action(self) -> pb2.PlayerAction:
         """Convert the discrete index + continuous params into a protobuf action message.
 
         Each parameter component is linearly mapped from [PARAM_LOW, PARAM_HIGH] to

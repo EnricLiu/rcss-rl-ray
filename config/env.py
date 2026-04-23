@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from client.base.allocator.config import AllocatorConfig
 from schema import GameServerSchema
+from .bhv import BhvConfig
 from .server import ServerConfig
 
 
@@ -21,3 +22,5 @@ class EnvConfig(BaseModel):
     room: GameServerSchema
     grpc: ServerConfig
     allocator: AllocatorConfig
+
+    bhv: BhvConfig = BhvConfig()
