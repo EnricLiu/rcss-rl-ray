@@ -138,7 +138,7 @@ class Action:
         return cls(**action_params)
 
     @classmethod
-    @cached
+    @cached(cache={})
     def n_actions(cls) -> int:
         """Return the total number of discrete actions."""
         return len(cls.action_names())
