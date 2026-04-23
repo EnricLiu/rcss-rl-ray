@@ -172,7 +172,7 @@ class Action:
 
     @classmethod
     def mask_from_allowed(cls, names: Iterable[str]) -> np.ndarray:
-        """Build an ``act_mask`` vector from allowed action names."""
+        """Build an ``action_mask`` vector from allowed action names."""
         allowed = set(names)
         return np.asarray(
             [1 if action_name in allowed else 0 for action_name in cls.action_names()],
@@ -181,7 +181,7 @@ class Action:
 
     @classmethod
     def mask_from_blocked(cls, names: Iterable[str]) -> np.ndarray:
-        """Build an ``act_mask`` vector from blocked action names."""
+        """Build an ``action_mask`` vector from blocked action names."""
         blocked = set(names)
         return np.asarray(
             [0 if action_name in blocked else 1 for action_name in cls.action_names()],
@@ -194,11 +194,11 @@ class Action:
         return np.ones(cls.n_actions(), dtype=np.int8)
 
     @classmethod
-    def is_action_allowed(cls, action: int, act_mask: np.ndarray | None) -> bool:
+    def is_action_allowed(cls, action: int, action_mask: np.ndarray | None) -> bool:
         """Check whether a discrete action index is enabled by the given mask."""
-        if act_mask is None:
+        if action_mask is None:
             return True
-        if action < 0 or action >= len(act_mask):
+        if action < 0 or action >= len(action_mask):
             return False
-        return bool(np.asarray(act_mask)[action])
+        return bool(np.asarray(action_mask)[action])
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from ray.util import get_node_ip_address
 
 from rcss_env.env import RCSSEnv
+from rcss_env.action_mask import ActionMaskResolver
 from train import make_default_room_schema, make_env_config
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,9 @@ def summarize_agent_payload(payload: Any) -> dict[str, Any]:
 		if "obs" in payload and isinstance(payload["obs"], np.ndarray):
 			summary["obs_shape"] = list(payload["obs"].shape)
 			summary["obs_dtype"] = str(payload["obs"].dtype)
-		if "act_mask" in payload and isinstance(payload["act_mask"], np.ndarray):
-			summary["act_mask_shape"] = list(payload["act_mask"].shape)
-			summary["act_mask_active"] = int(np.asarray(payload["act_mask"]).sum())
+		if ActionMaskResolver.OBSERVATION_KEY in payload and isinstance(payload[ActionMaskResolver.OBSERVATION_KEY], np.ndarray):
+			summary["action_mask_shape"] = list(payload[ActionMaskResolver.OBSERVATION_KEY].shape)
+			summary["action_mask_active"] = int(np.asarray(payload[ActionMaskResolver.OBSERVATION_KEY]).sum())
 		return summary
 
 	return {"kind": type(payload).__name__, "repr": repr(payload)}
@@ -68,14 +69,14 @@ def _sample_action_for_agent(env: RCSSEnv, agent_id: int, payload: Any = None) -
 	if not isinstance(payload, Mapping):
 		return sampled_action
 
-	act_mask = payload.get("act_mask")
-	if not isinstance(act_mask, np.ndarray):
+	action_mask = payload.get(ActionMaskResolver.OBSERVATION_KEY)
+	if not isinstance(action_mask, np.ndarray):
 		return sampled_action
 
-	mask = np.asarray(act_mask).astype(np.int8)
+	mask = np.asarray(action_mask).astype(np.int8)
 	allowed_indices = np.flatnonzero(mask)
 	if allowed_indices.size == 0:
-		logger.error("agent %s returned an empty act_mask; falling back to sampled discrete action", agent_id)
+		logger.error("agent %s returned an empty action_mask; falling back to sampled discrete action", agent_id)
 		return sampled_action
 
 	sampled_action["actions"] = int(np.random.choice(allowed_indices))

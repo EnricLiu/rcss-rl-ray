@@ -354,7 +354,7 @@ class RCSSEnv(MultiAgentEnv):
         for unum, state in states.items():
             obs[unum] = {
                 "obs": observation.extract(state.world_model).astype(np.float32),
-                "act_mask": self.__action_mask(unum),
+                ActionMaskResolver.OBSERVATION_KEY: self.__action_mask(unum),
             }
         return obs
 

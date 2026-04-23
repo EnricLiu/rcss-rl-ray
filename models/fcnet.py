@@ -11,6 +11,7 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.models import ModelCatalog
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.typing import TensorType, ModelConfigDict
+from rcss_env.action_mask import ActionMaskResolver
 
 class RCSSFCNet(TorchModelV2, nn.Module):
 
@@ -70,11 +71,11 @@ class RCSSFCNet(TorchModelV2, nn.Module):
     ) -> tuple[TensorType, list[TensorType]]:
 
         obs_payload = input_dict.get("obs")
-        act_mask = None
+        action_mask = None
 
         if isinstance(obs_payload, dict) and "obs" in obs_payload:
             obs = obs_payload["obs"].float()
-            act_mask = obs_payload.get("act_mask")
+            action_mask = obs_payload.get(ActionMaskResolver.OBSERVATION_KEY)
         else:
             obs = input_dict["obs_flat"].float()
 
@@ -82,8 +83,8 @@ class RCSSFCNet(TorchModelV2, nn.Module):
         self._last_value = self._value_head(trunk_out).squeeze(1)
 
         logits = self._policy_head(trunk_out)
-        if act_mask is not None and self._discrete_action_dim > 0:
-            mask = act_mask.float().clamp(0.0, 1.0)
+        if action_mask is not None and self._discrete_action_dim > 0:
+            mask = action_mask.float().clamp(0.0, 1.0)
             if mask.shape[-1] == self._discrete_action_dim and logits.shape[-1] >= self._discrete_action_dim:
                 discrete_logits = logits[..., :self._discrete_action_dim]
                 inf_mask = torch.where(
