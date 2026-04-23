@@ -322,10 +322,13 @@ class RCSSEnv(MultiAgentEnv):
         if (prev_state := self.__prev_state(unum)) is None: return None
         return prev_state.full_world_model
 
-    def __collect_states(self, timeout_s: float = 30.0) -> dict[int, pb2.State]:
+    def __collect_states(self, timeout_s: float = 180.0) -> dict[int, pb2.State]:
         """Block until all registered agents have sent their State."""
         try:
             states = self.__get_servicer().fetch_states(timeout=timeout_s)
+            if len(missing := self.agent_team_unums.difference(states.keys())) != 0:
+                raise ValueError(f"Missing states for unums: {sorted(missing)}")
+
             return states
         except Exception as exc:
             logger.warning("Timeout fetching states for world models: %s", exc)
