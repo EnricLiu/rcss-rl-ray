@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Timeout constants (seconds)
 STATE_GET_TIMEOUT_S = 2
 STATE_SEND_TIMEOUT_S = 2
-ACTION_GET_TIMEOUT_S = 30
+ACTION_GET_TIMEOUT_S = 120
 ACTION_SEND_TIMEOUT_S = 2
 
 
