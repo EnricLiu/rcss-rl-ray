@@ -20,7 +20,7 @@ from pathlib import Path
 from ipaddress import IPv4Address
 
 import ray
-from action_mask import ActionMaskResolver
+from rcss_env.action_mask import ActionMaskResolver
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 
