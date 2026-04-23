@@ -6,12 +6,13 @@ PlayerAction message.  Supported action types: catch, dash, kick, move, tackle, 
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 from itertools import count
 from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
+from cachetools import cached
 from gymnasium import spaces
 
 from .grpc_srv.proto import pb2
@@ -33,35 +34,42 @@ class Action:
     PARAM_LOW = -1.0
     PARAM_HIGH = 1.0
 
+    CATCH = "catch"
+    DASH = "dash"
+    KICK = "kick"
+    MOVE = "move"
+    TACKLE = "tackle"
+    TURN = "turn"
+
     # All supported action types and their parameter constraints.
     # Each entry: key = action name, value = dict where "cls" is the protobuf
     # message class and the remaining key-value pairs map parameter names to
     # constraints (tuple = continuous range, set = discrete value set).
     ALL_ACTIONS = OrderedDict({
-        "catch": {
+        CATCH: {
             "cls": pb2.Catch,
         },
-        "dash": {
+        DASH: {
             "cls": pb2.Dash,
             "power": (0.0, 100.0),
             "relative_direction": (-180.0, 180.0),
         },
-        "kick": {
+        KICK: {
             "cls": pb2.Kick,
             "power": (0.0, 100.0),
             "relative_direction": (-180.0, 180.0),
         },
-        "move": {
+        MOVE: {
             "cls": pb2.Move,
             "x": (-1.0, 1.0),
             "y": (-1.0, 1.0),
         },
-        "tackle": {
+        TACKLE: {
             "cls": pb2.Tackle,
             "power_or_dir": (0.0, 100.0),
             "foul": {0, 1},
         },
-        "turn": {
+        TURN: {
             "cls": pb2.Turn,
             "relative_direction": (-180.0, 180.0),
         }
@@ -73,6 +81,24 @@ class Action:
 
     def __get_action(self, cls, config: dict[str, Any]):
         pass
+
+    @classmethod
+    def action_names(cls) -> tuple[str, ...]:
+        """Return the discrete action names in the exact encoded order."""
+        return tuple(cls.ALL_ACTIONS.keys())
+
+    @classmethod
+    def action_index(cls, name: str) -> int:
+        """Return the encoded discrete index for an action name."""
+        try:
+            return cls.action_names().index(name)
+        except ValueError as exc:
+            raise KeyError(f"Unknown action name: {name}") from exc
+
+    @classmethod
+    def action_name(cls, index: int) -> str:
+        """Return the action name for a discrete action index."""
+        return cls.action_names()[index]
 
     def get_action(self) -> pb2.PlayerAction:
         """Convert the discrete index + continuous params into a protobuf action message.
@@ -112,9 +138,10 @@ class Action:
         return cls(**action_params)
 
     @classmethod
+    @cached
     def n_actions(cls) -> int:
         """Return the total number of discrete actions."""
-        return len(cls.ALL_ACTIONS.keys())
+        return len(cls.action_names())
 
     @classmethod
     def n_action_params(cls) -> int:
@@ -135,3 +162,36 @@ class Action:
         action = action_dict["actions"]
         params = action_dict["params"]
         return Action(action=action, params=params)
+
+    @classmethod
+    def mask_from_allowed(cls, names: Iterable[str]) -> np.ndarray:
+        """Build an ``act_mask`` vector from allowed action names."""
+        allowed = set(names)
+        return np.asarray(
+            [1 if action_name in allowed else 0 for action_name in cls.action_names()],
+            dtype=np.int8,
+        )
+
+    @classmethod
+    def mask_from_blocked(cls, names: Iterable[str]) -> np.ndarray:
+        """Build an ``act_mask`` vector from blocked action names."""
+        blocked = set(names)
+        return np.asarray(
+            [0 if action_name in blocked else 1 for action_name in cls.action_names()],
+            dtype=np.int8,
+        )
+
+    @classmethod
+    def full_action_mask(cls) -> np.ndarray:
+        """Return a permissive mask where all discrete actions are enabled."""
+        return np.ones(cls.n_actions(), dtype=np.int8)
+
+    @classmethod
+    def is_action_allowed(cls, action: int, act_mask: np.ndarray | None) -> bool:
+        """Check whether a discrete action index is enabled by the given mask."""
+        if act_mask is None:
+            return True
+        if action < 0 or action >= len(act_mask):
+            return False
+        return bool(np.asarray(act_mask)[action])
+

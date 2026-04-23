@@ -61,9 +61,37 @@ def summarize_observations(obs: Mapping[int, Any]) -> dict[str, Any]:
 	return {str(agent_id): summarize_agent_payload(agent_obs) for agent_id, agent_obs in obs.items()}
 
 
-def build_action_dict(env: RCSSEnv, active_agents: Sequence[int] | None = None) -> dict[int, Any]:
+def _sample_action_for_agent(env: RCSSEnv, agent_id: int, payload: Any = None) -> dict[str, Any]:
+	action_space = env.action_spaces[agent_id]
+	sampled_action = action_space.sample()
+
+	if not isinstance(payload, Mapping):
+		return sampled_action
+
+	act_mask = payload.get("act_mask")
+	if not isinstance(act_mask, np.ndarray):
+		return sampled_action
+
+	mask = np.asarray(act_mask).astype(np.int8)
+	allowed_indices = np.flatnonzero(mask)
+	if allowed_indices.size == 0:
+		logger.error("agent %s returned an empty act_mask; falling back to sampled discrete action", agent_id)
+		return sampled_action
+
+	sampled_action["actions"] = int(np.random.choice(allowed_indices))
+	return sampled_action
+
+
+def build_action_dict(
+	env: RCSSEnv,
+	active_agents: Sequence[int] | None = None,
+	observations: Mapping[int, Any] | None = None,
+) -> dict[int, Any]:
 	agent_ids = list(active_agents) if active_agents is not None else list(env.agents)
-	return {agent_id: env.action_spaces[agent_id].sample() for agent_id in agent_ids}
+	return {
+		agent_id: _sample_action_for_agent(env, agent_id, None if observations is None else observations.get(agent_id))
+		for agent_id in agent_ids
+	}
 
 
 def _safe_space_contains(space: Any, value: Any) -> bool | None:
@@ -408,7 +436,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 			for step_idx in range(steps):
 				current_phase = "step"
 				current_step_idx = step_idx + 1
-				actions = build_action_dict(env, active_agents)
+				actions = build_action_dict(env, active_agents, obs)
 				step_started_at = perf_counter()
 				next_obs, rewards, terminateds, truncateds, next_infos = env.step(actions)
 				step_duration_s = perf_counter() - step_started_at
@@ -454,6 +482,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 						sorted(next_obs.keys()),
 					)
 
+				obs = next_obs
 				active_agents = [int(agent_id) for agent_id in sorted(next_obs.keys())] if next_obs else active_agents
 				done_reason = determine_done_reason(terminateds, truncateds, step_idx + 1, steps)
 
@@ -484,7 +513,8 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 			result["totals"]["episodes_completed"] += 1
 			result["totals"]["steps_completed"] += steps_completed
 			result["totals"]["reward_sum"] += total_reward_sum
-			cast(list[dict[str, Any]], result["episodes"]).append(current_episode_record)
+			completed_episode_record = current_episode_record
+			cast(list[dict[str, Any]], result["episodes"]).append(completed_episode_record)
 			logger.warning(
 				"episode %d/%d finished: steps_completed=%d done_reason=%s reward_sum=%.3f final_scores=%s",
 				episode_idx,
@@ -492,7 +522,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 				steps_completed,
 				done_reason,
 				total_reward_sum,
-				current_episode_record["final_scores"],
+				completed_episode_record["final_scores"],
 			)
 			current_episode_record = None
 
@@ -527,7 +557,8 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 		if current_episode_record is not None:
 			current_episode_record["status"] = "failed"
 			current_episode_record["failure_context"] = result["failure_context"]
-			cast(list[dict[str, Any]], result["episodes"]).append(current_episode_record)
+			failed_episode_record = current_episode_record
+			cast(list[dict[str, Any]], result["episodes"]).append(failed_episode_record)
 		if env.has_room():
 			try:
 				result["failure_room"] = json_safe(env.room.info)

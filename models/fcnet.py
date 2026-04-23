@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+from gymnasium import spaces
 from gymnasium.spaces import Discrete
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.models import ModelCatalog
@@ -13,10 +14,12 @@ from ray.rllib.utils.typing import TensorType, ModelConfigDict
 
 class RCSSFCNet(TorchModelV2, nn.Module):
 
+    _MASK_LOGIT_MIN = -1.0e9
+
     def __init__(
         self,
         obs_space: Any,
-        action_space: Discrete,
+        action_space: Any,
         num_outputs: int,
         model_config: ModelConfigDict,
         name: str,
@@ -30,7 +33,20 @@ class RCSSFCNet(TorchModelV2, nn.Module):
             "custom_model_config", {}
         ).get("hidden_sizes", [256, 256])
 
-        obs_dim = int(np.prod(obs_space.shape))
+        original_obs_space = getattr(obs_space, "original_space", obs_space)
+        if isinstance(original_obs_space, spaces.Dict) and "obs" in original_obs_space.spaces:
+            feature_obs_space = original_obs_space["obs"]
+        else:
+            feature_obs_space = original_obs_space
+
+        obs_dim = int(np.prod(feature_obs_space.shape))
+
+        original_action_space = getattr(action_space, "original_space", action_space)
+        self._discrete_action_dim = 0
+        if isinstance(original_action_space, spaces.Dict) and "actions" in original_action_space.spaces:
+            discrete_action_space = original_action_space["actions"]
+            if isinstance(discrete_action_space, Discrete):
+                self._discrete_action_dim = int(discrete_action_space.n)
 
         layers: list[nn.Module] = []
         in_size = obs_dim
@@ -53,10 +69,34 @@ class RCSSFCNet(TorchModelV2, nn.Module):
         seq_lens: TensorType,
     ) -> tuple[TensorType, list[TensorType]]:
 
-        obs = input_dict["obs_flat"].float()
+        obs_payload = input_dict.get("obs")
+        act_mask = None
+
+        if isinstance(obs_payload, dict) and "obs" in obs_payload:
+            obs = obs_payload["obs"].float()
+            act_mask = obs_payload.get("act_mask")
+        else:
+            obs = input_dict["obs_flat"].float()
+
         trunk_out = self._trunk(obs)
         self._last_value = self._value_head(trunk_out).squeeze(1)
-        return self._policy_head(trunk_out), state
+
+        logits = self._policy_head(trunk_out)
+        if act_mask is not None and self._discrete_action_dim > 0:
+            mask = act_mask.float().clamp(0.0, 1.0)
+            if mask.shape[-1] == self._discrete_action_dim and logits.shape[-1] >= self._discrete_action_dim:
+                discrete_logits = logits[..., :self._discrete_action_dim]
+                inf_mask = torch.where(
+                    mask > 0,
+                    torch.zeros_like(mask),
+                    torch.full_like(mask, self._MASK_LOGIT_MIN),
+                )
+                logits = torch.cat(
+                    [discrete_logits + inf_mask, logits[..., self._discrete_action_dim:]],
+                    dim=-1,
+                )
+
+        return logits, state
 
     @override(TorchModelV2)
     def value_function(self) -> TensorType:

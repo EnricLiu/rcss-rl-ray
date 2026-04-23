@@ -22,6 +22,7 @@ from . import obs as observation
 from . import reward
 
 from .action import Action
+from .action_mask import ActionMaskResolver
 from client.base.allocator import AllocatorClient
 from client.room import RoomClient
 from .grpc_srv.proto import pb2
@@ -54,7 +55,7 @@ class RCSSEnv(MultiAgentEnv):
         )
         _obs_space = spaces.Dict({
             "obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32),
-            "act_mask": spaces.MultiBinary(Action.n_actions()),
+            ActionMaskResolver.OBSERVATION_KEY: spaces.MultiBinary(Action.n_actions()),
         })
 
         _act_space = Action.space_schema()
@@ -83,6 +84,16 @@ class RCSSEnv(MultiAgentEnv):
 
         # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
+        self.__curr_states: dict[int, pb2.State] = {}
+        self.__player_by_unum = {
+            player.unum: player
+            for player in self.agent_team.players
+        }
+
+        self.__action_masks: dict[int, ActionMaskResolver] = {
+            player.unum: ActionMaskResolver(player)
+            for player in self.agent_team.players
+        }
 
         self._setup()
 
@@ -144,7 +155,7 @@ class RCSSEnv(MultiAgentEnv):
         *,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
-    ) -> tuple[dict[int, np.ndarray], dict[int, dict[str, Any]]]:
+    ) -> tuple[dict[int, dict[str, np.ndarray]], dict[int, dict[str, Any]]]:
         """Reset the environment: allocate a new simulation room and return initial observations."""
         super().reset(seed=seed, options=options)
 
@@ -175,6 +186,7 @@ class RCSSEnv(MultiAgentEnv):
         # 6. Build initial observations and info dicts
         self.__step_count = 0
         self.__prev_states = {}
+        self.__curr_states = states
         obs = self.__states_to_obs(states)
         infos: dict[int, dict[str, Any]] = {unum: {} for unum in self.agent_team_unums}
         return obs, infos
@@ -183,7 +195,7 @@ class RCSSEnv(MultiAgentEnv):
         self,
         action_dict: dict[int, Any],
     ) -> tuple[
-        dict[int, np.ndarray],
+        dict[int, dict[str, np.ndarray]],
         dict[int, float],
         dict[Any, bool],
         dict[Any, bool],
@@ -197,19 +209,21 @@ class RCSSEnv(MultiAgentEnv):
         self.__get_servicer().send_actions(actions)
 
         # 2. Collect new states and compare with the previous step for rewards
-        prev_states = self.__prev_states
+        self.__prev_states = self.__curr_states
         curr_states = self.__collect_states()
-        self.__prev_states = curr_states
+        self.__curr_states = curr_states
 
-        obs = self.__states_to_obs(curr_states)
         rewards = {
-            unum: self.__calc_reward(unum, prev_states.get(unum), curr_states[unum])
+            unum: self.__calc_reward(unum, self.__prev_states.get(unum), self.__curr_states.get(unum))
             for unum in self.agent_team_unums
             if unum in curr_states
         }
 
         curr_wms = {unum: state.world_model for unum, state in curr_states.items()}
+
         terminateds, truncateds = self.__check_done(curr_wms)
+
+        obs = self.__states_to_obs(curr_states)
         infos = self.__collect_infos(curr_wms)
 
         return obs, rewards, terminateds, truncateds, infos
@@ -279,6 +293,14 @@ class RCSSEnv(MultiAgentEnv):
         if (prev_state := self.__prev_state(unum)) is None: return None
         return prev_state.world_model
 
+    def __latest_state(self, unum: int) -> pb2.State | None:
+        return self.__curr_states.get(unum)
+
+    def __latest_obs_wm(self, unum: int) -> pb2.WorldModel | None:
+        if (latest_state := self.__latest_state(unum)) is None:
+            return None
+        return latest_state.world_model
+
     def __prev_truth_wm(self, unum: int) -> pb2.WorldModel | None:
         """Return the full-information WorldModel from the previous step for the given unum."""
         if (prev_state := self.__prev_state(unum)) is None: return None
@@ -295,19 +317,28 @@ class RCSSEnv(MultiAgentEnv):
                 "Failed to fetch states for world models, likely due to a communication issue with the simulation. "
             )
 
-    @staticmethod
-    def __states_to_obs(states: dict[int, pb2.State]) -> dict[int, np.ndarray]:
-        """Convert a State dict into a {unum: observation_vector} dict."""
-        obs = {
-            unum: observation.extract(s.world_model).astype(np.float32)
-            for unum, s in states.items()
-        }
+    def __states_to_obs(self, states: dict[int, pb2.State]) -> dict[int, dict[str, np.ndarray]]:
+        """Convert states into masked observation payloads for each agent."""
+        obs: dict[int, dict[str, np.ndarray]] = {}
+        for unum, state in states.items():
+            obs[unum] = {
+                "obs": observation.extract(state.world_model).astype(np.float32),
+                "act_mask": self.__action_mask(unum),
+            }
         return obs
+
+    def __validate_action_mask(self, unum: int, action_dict: dict[str, Any]) -> None:
+        discrete_action = int(action_dict["actions"])
+        act_mask = self.__action_mask(unum)
+        if not Action.is_action_allowed(discrete_action, act_mask):
+            action_name = Action.action_name(discrete_action)
+            logger.warning(f"Action {action_name!r} (index={discrete_action}) is masked out for agent unum={unum}")
 
     def __gather_actions(self, action_dict: dict[int, Any]) -> dict[int, pb2.PlayerActions]:
         ret = {}
         for unum, act in action_dict.items():
-            wm_opt = self.__prev_obs_wm(unum)
+            self.__validate_action_mask(unum, act)
+            wm_opt = self.__latest_obs_wm(unum)
 
             body_act = Action.from_space(act).get_action()
             neck_act = self.bhv.neck.parse(wm_opt)
@@ -319,6 +350,16 @@ class RCSSEnv(MultiAgentEnv):
             ret[unum] = actions
 
         return ret
+
+    def __action_mask(self, unum: int) -> np.ndarray:
+        state = self.__latest_state(unum)
+        wm = state.world_model if state is not None else None
+
+        am = self.__action_masks.get(unum)
+        ret = am.resolve(wm) if am is not None else Action.full_action_mask()
+
+        return ret
+
 
     @staticmethod
     def __calc_reward(

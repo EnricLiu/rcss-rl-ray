@@ -20,6 +20,7 @@ from pathlib import Path
 from ipaddress import IPv4Address
 
 import ray
+from action_mask import ActionMaskResolver
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
 
@@ -138,6 +139,7 @@ def build_ppo_config(
         .environment(
             env="rcss_multi_agent",
             env_config={"env_config": env_config},
+            action_mask_key=ActionMaskResolver.OBSERVATION_KEY,
         )
         .env_runners(
             num_env_runners=train_cfg.num_env_runners,
