@@ -98,7 +98,7 @@ class AgentPolicy(Policy):
 class SspAgentPolicy(AgentPolicy):
     agent: Literal[PolicyAgentKind.Ssp] = PolicyAgentKind.Ssp
     grpc_host: IPvAnyAddress | IPv4Address
-    grpc_port: int = Field(ge=1, le=65535)
+    grpc_port: int = Field(ge=0, le=65535)
 
     def grpc_addr(self) -> str:
         """Return the gRPC address as a ``host:port`` string."""

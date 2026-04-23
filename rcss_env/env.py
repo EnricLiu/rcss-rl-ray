@@ -242,9 +242,11 @@ class RCSSEnv(MultiAgentEnv):
     # ------------------------------------------------------------------
     # Room / gRPC lifecycle helpers
     # ------------------------------------------------------------------
-
     def _start_grpc_server(self) -> None:
-        """Start the gRPC server if it is not already running."""
+        """
+        Start the gRPC server if it is not already running.
+        MUST call BEFORE requesting the room allocation
+        """
         if self.__grpc_server is not None:
             return
         from .grpc_srv.servicer import serve
