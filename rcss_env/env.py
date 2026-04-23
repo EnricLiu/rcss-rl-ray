@@ -259,7 +259,7 @@ class RCSSEnv(MultiAgentEnv):
             block=False,
         )
 
-        self.config.grpc.port = actual_port
+        self.__sync_room_grpc_port(actual_port)
 
     def _stop_grpc_server(self) -> None:
         """Gracefully stop the gRPC server and its event loop."""
@@ -289,6 +289,12 @@ class RCSSEnv(MultiAgentEnv):
             except Exception as exc:
                 logger.warning("Failed to release room %s: %s", self.room.info.name, exc)
             self.__room = None
+
+    def __sync_room_grpc_port(self, port: int) -> None:
+        """Mirror the bound gRPC port into every SSP agent policy in the room schema."""
+        self.config.grpc.port = port
+        for player in self.agent_team.ssp_agents():
+            player.policy.grpc_port = port
 
     # ------------------------------------------------------------------
     # State / observation helpers
