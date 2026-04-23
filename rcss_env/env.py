@@ -216,8 +216,11 @@ class RCSSEnv(MultiAgentEnv):
         self.__step_count += 1
 
         # 1. Encode each agent's action to a protobuf message and send them
+        logger.warning(f"Step {self.__step_count}: sending actions for unums {sorted(action_dict.keys())}")
         actions = self.__gather_actions(action_dict)
+        logger.warning(f"Step {self.__step_count}: actions={actions}")
         self.__get_servicer().send_actions(actions)
+        logger.warning(f"Step {self.__step_count}: actions sent to servicer")
 
         # 2. Collect new states and compare with the previous step for rewards
         self.__prev_states = self.__curr_states
