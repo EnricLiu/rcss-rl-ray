@@ -346,30 +346,30 @@ class GameServicer(pb2_grpc.GameServicer):
 # Server launcher helpers
 # ------------------------------------------------------------------
 
+async def _start(servicer: GameServicer, port: int) -> tuple[grpc_aio.Server, int]:
+    srv = grpc_aio.server()
+    pb2_grpc.add_GameServicer_to_server(servicer, srv)
+    port = srv.add_insecure_port(f"[::]:{port}")
+    await srv.start()
+    logger.info("gRPC Game server started on port %d", port)
+    return srv, port
+
 def _run_aio_server(
     servicer: GameServicer,
     port: int,
     started: threading.Event,
-    server_holder: list,
+    server_holder: list[tuple[grpc_aio.Server, int]],
     block: bool,
 ) -> None:
     """Thread target: create an asyncio event loop, start the gRPC server, and run."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    async def _start() -> grpc_aio.Server:
-        srv = grpc_aio.server()
-        pb2_grpc.add_GameServicer_to_server(servicer, srv)
-        srv.add_insecure_port(f"[::]:{port}")
-        await srv.start()
-        logger.info("gRPC Game server started on port %d", port)
-        return srv
-
-    server = loop.run_until_complete(_start())
+    server, port = loop.run_until_complete(_start(servicer, port))
 
     servicer.bind_loop(loop)
 
-    server_holder.append(server)
+    server_holder.append((server, port))
     started.set()
 
     if block:
@@ -383,7 +383,7 @@ def serve(
     servicer: GameServicer | None = None,
     port: int = 50051,
     block: bool = True,
-) -> tuple[grpc_aio.Server, asyncio.AbstractEventLoop]:
+) -> tuple[grpc_aio.Server, int, asyncio.AbstractEventLoop]:
     """Launch the gRPC Game server on a daemon thread.
 
     Args:
@@ -393,7 +393,7 @@ def serve(
                if False the server runs in the background.
 
     Returns:
-        A ``(server, loop)`` tuple for the running gRPC async server and its event loop.
+        A ``(server, port, loop)`` tuple for the running gRPC async server and its event loop.
     """
     if servicer is None:
         servicer = GameServicer()
@@ -413,11 +413,11 @@ def serve(
     if not server_holder:
         raise RuntimeError("gRPC aio server failed to start")
 
-    server = server_holder[0]
+    server, port = server_holder[0]
     loop = servicer._loop
     assert loop is not None, "Loop should have been bound by _run_aio_server"
 
     if block:
         thread.join()
 
-    return server, loop
+    return server, port, loop

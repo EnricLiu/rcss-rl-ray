@@ -228,11 +228,13 @@ class RCSSEnv(MultiAgentEnv):
             return
         from .grpc_srv.servicer import serve
 
-        self.__grpc_server, self.__grpc_loop = serve(
+        self.__grpc_server, actual_port, self.__grpc_loop = serve(
             self.__get_servicer(),
             port=self.config.grpc.port,
             block=False,
         )
+
+        self.config.grpc.port = actual_port
 
     def _stop_grpc_server(self) -> None:
         """Gracefully stop the gRPC server and its event loop."""
