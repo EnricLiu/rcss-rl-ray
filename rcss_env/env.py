@@ -50,15 +50,17 @@ class RCSSEnv(MultiAgentEnv):
         self.agent_team_unums = set([agent.unum for agent in self.agent_team.ssp_agents()])
 
         # All agents share the same observation / action spaces
+        _act_space = Action.space_schema()
+
         _obs_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
         _obs_space = spaces.Dict({
             "obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32),
-            ActionMaskResolver.OBSERVATION_KEY: spaces.MultiBinary(Action.n_actions()),
+            ActionMaskResolver.OBSERVATION_KEY: spaces.Box(
+                low=0, high=1, shape=(Action.n_actions(),), dtype=np.int8
+            ),
         })
-
-        _act_space = Action.space_schema()
 
         # Sorted list of agent ids (by unum)
         self.agents = list(sorted(self.agent_team_unums))
