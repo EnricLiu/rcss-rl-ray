@@ -186,12 +186,15 @@ class RCSSEnv(MultiAgentEnv):
 
         try:
             self.room.rcss.trainer.start()
-
+            logger.info("Requested room %s from allocator and started simulation", self.room.info.name)
             # 5. Wait for all agent sidecars to send their initial states
             states = self.__collect_states()
-        except Exception:
+
+        except Exception as e:
             self._cleanup_room()
-            raise
+            raise gymnasium.error.ResetNeeded(
+                "Failed to start simulation or collect initial states, likely due to a communication issue with the simulation. "
+            ) from e
 
         # 6. Build initial observations and info dicts
         self.__curr_states = states
