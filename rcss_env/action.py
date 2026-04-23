@@ -34,6 +34,7 @@ class Action:
     PARAM_LOW = -1.0
     PARAM_HIGH = 1.0
 
+    # DO NOT CHANGE, should align with pb2 defination
     CATCH = "catch"
     DASH = "dash"
     KICK = "kick"
@@ -100,7 +101,10 @@ class Action:
         """Return the action name for a discrete action index."""
         return cls.action_names()[index]
 
-    def get_action(self) -> pb2.PlayerAction:
+    def get_pb2_name(self) -> str:
+        return self.action_names()[self.action]
+
+    def get_action(self) -> pb2.Catch | pb2.Dash | pb2.Kick | pb2.Move | pb2.Tackle | pb2.Turn:
         """Convert the discrete index + continuous params into a protobuf action message.
 
         Each parameter component is linearly mapped from [PARAM_LOW, PARAM_HIGH] to
@@ -136,6 +140,9 @@ class Action:
                 raise ValueError(f"Invalid constraints for parameter '{param_name}': {constraints}")
 
         return cls(**action_params)
+
+    def to_player_action(self) -> pb2.PlayerAction:
+        return pb2.PlayerAction(**{ self.get_pb2_name(): self.get_action() })
 
     @classmethod
     @cached(cache={})

@@ -371,7 +371,7 @@ class RCSSEnv(MultiAgentEnv):
             self.__validate_action_mask(unum, act)
             wm_opt = self.__latest_obs_wm(unum)
 
-            body_act = Action.from_space(act).get_action()
+            body_act = Action.from_space(act).to_player_action()
             neck_act = self.bhv.neck.parse(wm_opt)
             view_act = self.bhv.view.parse(wm_opt)
 
