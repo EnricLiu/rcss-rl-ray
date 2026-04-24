@@ -223,7 +223,7 @@ class RCSSEnv(MultiAgentEnv):
         infos: dict[int, dict[str, Any]] = {unum: {} for unum in self.agent_team_unums}
         return obs, infos
 
-    def step(
+    def __step(
         self,
         action_dict: dict[int, Any],
     ) -> tuple[
@@ -279,6 +279,31 @@ class RCSSEnv(MultiAgentEnv):
         infos = self.__collect_infos(curr_wms)
 
         return obs, rewards, terminateds, truncateds, infos
+
+    def step(
+        self,
+        action_dict: dict[int, Any],
+    ) -> tuple[
+        dict[int, dict[str, np.ndarray]],
+        dict[int, float],
+        dict[Any, bool],
+        dict[Any, bool],
+        dict[int, dict[str, Any]],
+    ]:
+        try:
+            return self.__step(action_dict)
+        except gymnasium.error.ResetNeeded as e:
+            logger.error("Reset needed: %s. Returning empty observations and terminated/truncated=True for all agents. Runtime diagnostics: %s",)
+            unums = self.agent_team_unums
+
+            obs = {unum: None for unum in unums}
+            rewards = {unum: None for unum in unums}
+            terminateds = {unum: True for unum in unums}
+            truncateds = {unum: True for unum in unums}
+            infos = {unum: None for unum in unums}
+
+            return obs, rewards, terminateds, truncateds, infos
+
 
     def close(self) -> None:
         """Release external resources: room + gRPC server."""
