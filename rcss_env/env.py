@@ -71,7 +71,7 @@ class RCSSEnv(MultiAgentEnv):
         super().__init__()
 
         # Mutable state
-        self.__step_count: int = 0
+        self.__timestep: int = 0
 
         self.__loop = None
 
@@ -133,7 +133,7 @@ class RCSSEnv(MultiAgentEnv):
     def runtime_diagnostics(self) -> dict[str, Any]:
         """Return a structured snapshot of env/runtime state for timeout debugging."""
         return {
-            "step_count": self.__step_count,
+            "step_count": self.__timestep,
             "agent_unums": sorted(self.agent_team_unums),
             "prev_state_cycles": self.__state_cycles(self.__prev_states),
             "curr_state_cycles": self.__state_cycles(self.__curr_states),
@@ -235,35 +235,35 @@ class RCSSEnv(MultiAgentEnv):
     ]:
         """Execute one simulation step: send actions -> collect new states -> compute outputs."""
         import time
-        self.__step_count += 1
-        current_cycles = self.__state_cycles(self.__curr_states)
 
         # 1. Encode each agent's action to a protobuf message and send them
         logger.warning(
             "Step %d: gathering actions for unums=%s from current_cycles=%s",
-            self.__step_count,
+            self.__timestep,
             sorted(action_dict.keys()),
-            current_cycles,
+            self.__timestep,
         )
         actions = self.__gather_actions(action_dict)
 
         t0 = time.perf_counter()
-        logger.warning("Step %d: sending actions to servicer", self.__step_count)
+        logger.warning("Step %d: sending actions to servicer", self.__timestep)
         self.__get_servicer().send_actions(actions)
         t1 = time.perf_counter()
-        logger.warning("Step %d: actions sent in %.3fs", self.__step_count, t1 - t0)
+        logger.warning("Step %d: actions sent in %.3fs", self.__timestep, t1 - t0)
 
         # 2. Collect new states and compare with the previous step for rewards
         self.__prev_states = self.__curr_states
-        logger.warning("Step %d: waiting for states from simulation", self.__step_count)
+        logger.warning("Step %d: waiting for states from simulation", self.__timestep)
         curr_states = self.__collect_states()
+        self.__curr_states = curr_states
         t2 = time.perf_counter()
+
+        self.__timestep = next(iter(curr_states.values())).world_model.cycle
         cycles = {u: s.world_model.cycle for u, s in curr_states.items() if s.world_model}
         logger.warning(
             "Step %d: states collected in %.3fs — unums=%s cycles=%s",
-            self.__step_count, t2 - t1, sorted(curr_states.keys()), cycles,
+            self.__timestep, t2 - t1, sorted(curr_states.keys()), cycles,
         )
-        self.__curr_states = curr_states
 
         rewards = {
             unum: self.__calc_reward(unum, self.__prev_states.get(unum), curr_state)
@@ -309,6 +309,10 @@ class RCSSEnv(MultiAgentEnv):
         """Release external resources: room + gRPC server."""
         self._cleanup_room()
         self._stop_grpc_server()
+
+    @property
+    def timestep(self) -> int:
+        return self.__timestep
 
     # ------------------------------------------------------------------
     # Room / gRPC lifecycle helpers
@@ -411,7 +415,7 @@ class RCSSEnv(MultiAgentEnv):
 
     def __reset_episode_state(self) -> None:
         """Clear episode-local caches so reset failures do not leak prior state."""
-        self.__step_count = 0
+        self.__timestep = 0
         self.__prev_states = {}
         self.__curr_states = {}
 
@@ -528,7 +532,7 @@ class RCSSEnv(MultiAgentEnv):
 
         game_over = wm is not None and wm.game_mode_type == pb2.TimeOver
         time_up = self.schema.stopping.time_up
-        truncated = time_up is not None and self.__step_count >= time_up
+        truncated = time_up is not None and self.__timestep >= time_up
 
         terminateds: dict[Any, bool] = {unum: game_over for unum in self.agent_team_unums}
         terminateds["__all__"] = game_over
@@ -552,11 +556,11 @@ class RCSSEnv(MultiAgentEnv):
                         "our": wm.our_team_score,
                         "their": wm.their_team_score,
                     },
-                    "step": self.__step_count,
+                    "step": self.__timestep,
                     "cycle": wm.cycle,
                 }
             else:
-                infos[unum] = {"step": self.__step_count}
+                infos[unum] = {"step": self.__timestep}
         return infos
 
     # ------------------------------------------------------------------
