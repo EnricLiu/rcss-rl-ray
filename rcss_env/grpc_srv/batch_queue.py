@@ -85,6 +85,33 @@ class BatchQueue[StateTy]:
         """Check whether a unum is currently registered."""
         return unum in self.__unums
 
+    def snapshot(self) -> dict[str, object]:
+        """Return a structured view of the batcher's buffered state for debugging."""
+        queued_timesteps: dict[str, dict[str, object]] = {}
+        for timestep in sorted(self.__states.keys()):
+            arrived_unums = set(self.__states[timestep].keys())
+            queued_timesteps[str(timestep)] = {
+                "arrived_unums": sorted(arrived_unums),
+                "missing_unums": sorted(self.__unums - arrived_unums),
+            }
+
+        return {
+            "registered_unums": sorted(self.__unums),
+            "last_timestep": self.__last_timestep,
+            "pending_timesteps": sorted(self.__states.keys()),
+            "queued_timesteps": queued_timesteps,
+            "output_queue_sizes": {
+                str(unum): queue.qsize()
+                for unum, queue in sorted(self.__queues.items())
+            },
+            "dispatch_task": {
+                "exists": self.__task is not None,
+                "running": self.__task is not None and not self.__task.done(),
+                "done": self.__task.done() if self.__task is not None else None,
+                "cancelled": self.__task.cancelled() if self.__task is not None else None,
+            },
+        }
+
     async def __run(self):
         """Main dispatch loop: wait for updates or reset, then dispatch complete batches."""
         logging.warning("BatchQueue.__run: dispatch loop started, registered_unums=%s", sorted(self.__unums))

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from time import perf_counter
 from typing import Any
 
 import grpc
@@ -50,6 +51,9 @@ class GameServicer(pb2_grpc.GameServicer):
         self._action_queues: dict[int, asyncio.Queue[pb2.PlayerActions]] = {}      # unum -> actions from RL loop
 
         self._states: dict[int, pb2.State] = {}  # latest fetched state per unum
+        self._last_state_cycles: dict[int, int] = {}
+        self._last_get_action_meta: dict[int, dict[str, Any]] = {}
+        self._last_action_send_meta: dict[int, dict[str, Any]] = {}
 
         self._server_params: pb2.ServerParam | None = None
         self._player_params: pb2.PlayerParam | None = None
@@ -83,6 +87,38 @@ class GameServicer(pb2_grpc.GameServicer):
         """Return the set of currently registered unums."""
         return self._batcher.unums()
 
+    def debug_snapshot(self) -> dict[str, Any]:
+        """Return a structured runtime snapshot useful for timeout diagnostics."""
+        return {
+            "registered_unums": sorted(self._batcher.unums()),
+            "cached_state_cycles": {
+                str(unum): state.world_model.cycle
+                for unum, state in sorted(self._states.items())
+                if state.world_model is not None
+            },
+            "last_state_cycles": {
+                str(unum): cycle
+                for unum, cycle in sorted(self._last_state_cycles.items())
+            },
+            "last_get_action": {
+                str(unum): dict(meta)
+                for unum, meta in sorted(self._last_get_action_meta.items())
+            },
+            "last_action_send": {
+                str(unum): dict(meta)
+                for unum, meta in sorted(self._last_action_send_meta.items())
+            },
+            "state_queue_sizes": {
+                str(unum): queue.qsize()
+                for unum, queue in sorted(self._states_queues.items())
+            },
+            "action_queue_sizes": {
+                str(unum): queue.qsize()
+                for unum, queue in sorted(self._action_queues.items())
+            },
+            "batcher": self._batcher.snapshot(),
+        }
+
     # ------------------------------------------------------------------
     # gRPC RPC handlers (called by the sidecar)
     # ------------------------------------------------------------------
@@ -91,6 +127,14 @@ class GameServicer(pb2_grpc.GameServicer):
         """Submit a state to the batcher and wait for the RL loop to provide actions."""
         action_q = self._action_queues.get(unum)
         cycle = state.world_model.cycle if state.world_model else -1
+        started_at = perf_counter()
+        previous_meta = self._last_get_action_meta.get(unum)
+        self._last_state_cycles[unum] = cycle
+        self._last_get_action_meta[unum] = {
+            "cycle": cycle,
+            "received_monotonic_s": round(started_at, 6),
+            "action_queue_size_before_wait": action_q.qsize() if action_q is not None else None,
+        }
 
         if action_q is None:
             logger.warning(
@@ -107,6 +151,16 @@ class GameServicer(pb2_grpc.GameServicer):
             )
             return None
 
+        if previous_meta is not None:
+            previous_cycle = previous_meta.get("cycle")
+            logger.warning(
+                "__get_action: unum=%d cycle=%d arrived after previous_cycle=%s (delta_cycle=%s)",
+                unum,
+                cycle,
+                previous_cycle,
+                (cycle - previous_cycle) if isinstance(previous_cycle, int) else None,
+            )
+
         logger.warning("__get_action: unum=%d cycle=%d — submitting to batcher", unum, cycle)
         await self._batcher.put(unum, state.world_model.cycle, state)
         logger.warning("__get_action: unum=%d cycle=%d — waiting for action (timeout=%ds)", unum, cycle, ACTION_GET_TIMEOUT_S)
@@ -116,15 +170,20 @@ class GameServicer(pb2_grpc.GameServicer):
                 action_q.get(), timeout=ACTION_GET_TIMEOUT_S
             )
         except asyncio.TimeoutError:
+            self._last_get_action_meta[unum]["timed_out_waiting_for_action"] = True
+            self._last_get_action_meta[unum]["waited_s"] = round(perf_counter() - started_at, 6)
             logger.warning(
                 "Timeout waiting for actions for unum=%d cycle=%d — "
-                "batcher_unums=%s action_q_size=%d; returning empty actions",
+                "batcher_unums=%s action_q_size=%d snapshot=%s; returning empty actions",
                 unum, cycle,
                 sorted(self._batcher.unums()),
                 action_q.qsize(),
+                self.debug_snapshot(),
             )
             return pb2.PlayerActions()
 
+        self._last_get_action_meta[unum]["timed_out_waiting_for_action"] = False
+        self._last_get_action_meta[unum]["waited_s"] = round(perf_counter() - started_at, 6)
         logger.warning("__get_action: unum=%d cycle=%d — action received", unum, cycle)
         return actions
 
@@ -210,7 +269,12 @@ class GameServicer(pb2_grpc.GameServicer):
             return self._states.copy()
 
         expected_unums = sorted(u for u, _ in queue_items)
-        logger.warning("__fetch_states: waiting for states from unums=%s timeout=%.1fs", expected_unums, timeout)
+        logger.warning(
+            "__fetch_states: waiting for states from unums=%s timeout=%.1fs snapshot=%s",
+            expected_unums,
+            timeout,
+            self.debug_snapshot(),
+        )
 
         tasks = [
             asyncio.wait_for(queue.get(), timeout=timeout)
@@ -223,8 +287,8 @@ class GameServicer(pb2_grpc.GameServicer):
                 self.unregister(unum)
                 logger.error(
                     "__fetch_states: timeout/error waiting for state from unum=%d (%s); "
-                    "unregistered. batcher_unums=%s",
-                    unum, type(item).__name__, sorted(self._batcher.unums()),
+                    "unregistered. batcher_unums=%s snapshot=%s",
+                    unum, type(item).__name__, sorted(self._batcher.unums()), self.debug_snapshot(),
                 )
                 continue
 
@@ -232,6 +296,7 @@ class GameServicer(pb2_grpc.GameServicer):
             cycle = state.world_model.cycle if state.world_model else -1
             logger.warning("__fetch_states: received state unum=%d cycle=%d", unum, cycle)
             self._states[unum] = state
+            self._last_state_cycles[unum] = cycle
 
         logger.warning("__fetch_states: done — returning states for unums=%s", sorted(self._states.keys()))
         return self._states.copy()
@@ -251,12 +316,18 @@ class GameServicer(pb2_grpc.GameServicer):
             )
         try:
             await asyncio.wait_for(action_q.put(action), timeout=ACTION_PUT_TIMEOUT_S)
+            self._last_action_send_meta[unum] = {
+                "queued_monotonic_s": round(perf_counter(), 6),
+                "queue_size_after_put": action_q.qsize(),
+                "n_actions": len(action.actions),
+                "last_known_state_cycle": self._last_state_cycles.get(unum),
+            }
             logger.warning("__send_action: unum=%d action enqueued", unum)
         except asyncio.TimeoutError:
             logger.error(
                 "__send_action: unum=%d timed out putting action (queue full after %.1fs); "
-                "sidecar may have disconnected",
-                unum, ACTION_PUT_TIMEOUT_S,
+                "sidecar may have disconnected; snapshot=%s",
+                unum, ACTION_PUT_TIMEOUT_S, self.debug_snapshot(),
             )
             raise
 
@@ -277,7 +348,12 @@ class GameServicer(pb2_grpc.GameServicer):
                 logger.warning("__send_actions: failed to send action for unum=%d: %s", unum, r)
             elif isinstance(r, Exception):
                 self.unregister(unum)
-                logger.error("__send_actions: error sending action for unum=%d, unregistered: %s", unum, r)
+                logger.error(
+                    "__send_actions: error sending action for unum=%d, unregistered: %s snapshot=%s",
+                    unum,
+                    r,
+                    self.debug_snapshot(),
+                )
 
             ret.add(unum)
 
@@ -344,6 +420,9 @@ class GameServicer(pb2_grpc.GameServicer):
         await self._batcher.reset()
 
         self._states.clear()
+        self._last_state_cycles.clear()
+        self._last_get_action_meta.clear()
+        self._last_action_send_meta.clear()
         self._states_queues.clear()
         self._action_queues.clear()
 
@@ -365,6 +444,9 @@ class GameServicer(pb2_grpc.GameServicer):
             unums = tuple(self._batcher.unums())
             self._batcher = BatchQueue()
             self._states.clear()
+            self._last_state_cycles.clear()
+            self._last_get_action_meta.clear()
+            self._last_action_send_meta.clear()
             self._states_queues.clear()
             self._action_queues.clear()
 

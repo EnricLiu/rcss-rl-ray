@@ -130,6 +130,22 @@ class RCSSEnv(MultiAgentEnv):
     def has_allocator(self) -> bool:
         return self.__allocator is not None
 
+    def runtime_diagnostics(self) -> dict[str, Any]:
+        """Return a structured snapshot of env/runtime state for timeout debugging."""
+        return {
+            "step_count": self.__step_count,
+            "agent_unums": sorted(self.agent_team_unums),
+            "prev_state_cycles": self.__state_cycles(self.__prev_states),
+            "curr_state_cycles": self.__state_cycles(self.__curr_states),
+            "has_room": self.has_room(),
+            "room": {
+                "name": self.room.info.name,
+                "base_url_rcss": self.room.info.base_url_rcss,
+                "base_url_mc": self.room.info.base_url_mc,
+            } if self.has_room() else None,
+            "servicer": self.__get_servicer().debug_snapshot(),
+        }
+
     def _setup(self) -> None:
         """Initialize the allocator client and gRPC servicer, and register all agent unums."""
         self.__allocator = AllocatorClient(self.config.allocator)
@@ -189,6 +205,11 @@ class RCSSEnv(MultiAgentEnv):
             logger.info("Requested room %s from allocator and started simulation", self.room.info.name)
             # 5. Wait for all agent sidecars to send their initial states
             states = self.__collect_states()
+            logger.warning(
+                "Reset: collected initial states for unums=%s cycles=%s",
+                sorted(states.keys()),
+                self.__state_cycles(states),
+            )
 
         except Exception as e:
             self._cleanup_room()
@@ -215,9 +236,15 @@ class RCSSEnv(MultiAgentEnv):
         """Execute one simulation step: send actions -> collect new states -> compute outputs."""
         import time
         self.__step_count += 1
+        current_cycles = self.__state_cycles(self.__curr_states)
 
         # 1. Encode each agent's action to a protobuf message and send them
-        logger.warning("Step %d: gathering actions for unums=%s", self.__step_count, sorted(action_dict.keys()))
+        logger.warning(
+            "Step %d: gathering actions for unums=%s from current_cycles=%s",
+            self.__step_count,
+            sorted(action_dict.keys()),
+            current_cycles,
+        )
         actions = self.__gather_actions(action_dict)
 
         t0 = time.perf_counter()
@@ -239,9 +266,9 @@ class RCSSEnv(MultiAgentEnv):
         self.__curr_states = curr_states
 
         rewards = {
-            unum: self.__calc_reward(unum, self.__prev_states.get(unum), self.__curr_states.get(unum))
-            for unum in self.agent_team_unums
-            if unum in curr_states
+            unum: self.__calc_reward(unum, self.__prev_states.get(unum), curr_state)
+            for unum, curr_state in curr_states.items()
+            if unum in self.agent_team_unums
         }
 
         curr_wms = {unum: state.world_model for unum, state in curr_states.items()}
@@ -348,7 +375,11 @@ class RCSSEnv(MultiAgentEnv):
 
             return states
         except Exception as exc:
-            logger.warning("Timeout fetching states for world models: %s", exc)
+            logger.warning(
+                "Timeout fetching states for world models: %s runtime=%s",
+                exc,
+                self.runtime_diagnostics(),
+            )
             raise gymnasium.error.ResetNeeded(
                 "Failed to fetch states for world models, likely due to a communication issue with the simulation. "
             ) from exc
@@ -377,6 +408,16 @@ class RCSSEnv(MultiAgentEnv):
                 ActionMaskResolver.OBSERVATION_KEY: self.__action_mask(unum),
             }
         return obs
+
+    @staticmethod
+    def __state_cycles(states: dict[int, pb2.State]) -> dict[int, int]:
+        """Extract world-model cycles from a unum->State mapping."""
+        ret: dict[int, int] = {}
+        for unum, state in states.items():
+            world_model = getattr(state, "world_model", None)
+            if world_model is not None:
+                ret[unum] = world_model.cycle
+        return ret
 
     def __validate_action_mask(self, unum: int, action_dict: dict[str, Any]) -> None:
         discrete_action = int(action_dict["actions"])

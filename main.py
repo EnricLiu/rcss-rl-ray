@@ -257,6 +257,8 @@ def collect_room_diagnostics(env: RCSSEnv) -> dict[str, Any]:
 		"room": json_safe(env.room.info),
 		"base_url_rcss": env.room.info.base_url_rcss,
 		"base_url_mc": env.room.info.base_url_mc,
+		"env_runtime": json_safe(env.runtime_diagnostics()),
+		"probe_duration_s": {},
 	}
 
 	probes: dict[str, Any] = {
@@ -268,15 +270,45 @@ def collect_room_diagnostics(env: RCSSEnv) -> dict[str, Any]:
 	}
 
 	for name, probe in probes.items():
+		started_at = perf_counter()
+		logger.warning("room diagnostics: starting probe=%s room=%s", name, env.room.info.name)
 		try:
 			diagnostics[name] = json_safe(probe())
+			logger.warning(
+				"room diagnostics: probe=%s completed in %.3fs",
+				name,
+				perf_counter() - started_at,
+			)
 		except Exception as exc:  # pragma: no cover - exercised against live cluster
 			diagnostics[name] = {
 				"error_type": type(exc).__name__,
 				"message": str(exc),
 			}
+			logger.warning(
+				"room diagnostics: probe=%s failed in %.3fs with %s: %s",
+				name,
+				perf_counter() - started_at,
+				type(exc).__name__,
+				str(exc),
+			)
+		finally:
+			cast(dict[str, Any], diagnostics["probe_duration_s"])[name] = round(perf_counter() - started_at, 6)
 
 	return diagnostics
+
+
+def collect_runtime_snapshot(env: RCSSEnv) -> dict[str, Any]:
+	"""Collect a cheap, non-invasive snapshot that does not hit live RCSS/MC endpoints."""
+	return {
+		"room": json_safe(env.room.info),
+		"base_url_rcss": env.room.info.base_url_rcss,
+		"base_url_mc": env.room.info.base_url_mc,
+		"env_runtime": json_safe(env.runtime_diagnostics()),
+		"note": (
+			"Live HTTP diagnostics are deferred until episode end or failure so the first action "
+			"round-trip is not delayed by slow trainer/metrics probes."
+		),
+	}
 
 
 def build_smoke_request(args: argparse.Namespace) -> dict[str, Any]:
@@ -417,7 +449,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 			)
 
 			current_phase = "post_reset_diagnostics"
-			current_episode_record["post_reset_diagnostics"] = collect_room_diagnostics(env)
+			current_episode_record["post_reset_diagnostics"] = collect_runtime_snapshot(env)
 			logger.warning(
 				"episode %d/%d: room=%s rcss=%s mc=%s",
 				episode_idx,
@@ -502,6 +534,8 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 				"max": round(max(step_latencies_s), 6) if step_latencies_s else None,
 				"avg": round(sum(step_latencies_s) / len(step_latencies_s), 6) if step_latencies_s else None,
 			}
+			current_phase = "episode_diagnostics"
+			current_episode_record["post_episode_diagnostics"] = collect_room_diagnostics(env)
 			current_episode_record["status"] = "success"
 
 			if done_reason == "terminated":
@@ -514,6 +548,8 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 			result["totals"]["episodes_completed"] += 1
 			result["totals"]["steps_completed"] += steps_completed
 			result["totals"]["reward_sum"] += total_reward_sum
+			if current_episode_record is None:
+				raise RuntimeError("episode record unexpectedly missing during smoke finalization")
 			completed_episode_record = current_episode_record
 			cast(list[dict[str, Any]], result["episodes"]).append(completed_episode_record)
 			logger.warning(
@@ -565,6 +601,17 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 				result["failure_room"] = json_safe(env.room.info)
 			except Exception:
 				pass
+			try:
+				result["failure_room_diagnostics"] = collect_room_diagnostics(env)
+			except Exception as diag_exc:
+				result["failure_room_diagnostics_error"] = {
+					"type": type(diag_exc).__name__,
+					"message": str(diag_exc),
+				}
+		try:
+			result["failure_runtime"] = json_safe(env.runtime_diagnostics())
+		except Exception:
+			pass
 		return result
 	finally:
 		try:
