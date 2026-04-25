@@ -16,6 +16,7 @@ class TrainConfig:
     algo: Literal["PPO"] = "PPO"
     ray_address: str | None = "auto"
     experiment_name: str = "rcss-shooting"
+    storage_root: str = "/mnt/ray/storage"
     storage_path: str | None = None
     restore_path: str | None = None
     num_samples: int = Field(default=1, ge=1)
@@ -24,7 +25,7 @@ class TrainConfig:
     log_to_file: bool = False
 
     # PPO / RLlib hyperparameters
-    num_env_runners: int = Field(default=2, ge=0)
+    num_env_runners: int = Field(default=4, ge=0)
     num_envs_per_runner: int = Field(default=1, ge=1)
     train_batch_size: int = Field(default=4000, ge=1)
     sgd_minibatch_size: int = Field(default=128, ge=1)
@@ -72,3 +73,6 @@ class TrainConfig:
         self.experiment_name = f"{self.experiment_name}-{time_suffix}"
         if self.enable_aim:
             self.aim_experiment_name = f"{self.experiment_name}-{time_suffix}"
+
+        if self.storage_path is None:
+            self.storage_path = f"{self.storage_root}/{self.experiment_name}"
