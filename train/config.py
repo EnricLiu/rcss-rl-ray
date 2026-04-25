@@ -15,7 +15,7 @@ class TrainConfig:
     # Ray / Tune runtime
     algo: Literal["PPO"] = "PPO"
     ray_address: str | None = "auto"
-    experiment_name: str = Field(default_factory=lambda: f"rcss-shooting-{datetime.now(tz=TIMEZONE).strftime('%Y%m%d-%H%M%S')}")
+    experiment_name: str = "rcss-shooting"
     storage_path: str | None = None
     restore_path: str | None = None
     num_samples: int = Field(default=1, ge=1)
@@ -47,7 +47,7 @@ class TrainConfig:
     # Curriculum selection and shooting curriculum parameters
     curriculum: Literal["shooting"] = "shooting"
     curriculum_debug: bool = True
-    agent_unum: int = Field(default=1, ge=1, le=11)
+    agent_unum: int = Field(default=2, ge=1, le=11)
     team_side: Literal["left", "right", "rand"] = "left"
     our_player_num: int = Field(default=2, ge=1, le=11)
     oppo_player_num: int = Field(default=2, ge=1, le=11)
@@ -63,6 +63,12 @@ class TrainConfig:
 
     # Aim/Tune logging
     enable_aim: bool = True
-    aim_repo: str | None = None
-    aim_experiment_name: str | None = None
+    aim_repo: str = "/mnt/aim"
+    aim_experiment_name: str = "rcss-shooting"
     aim_metrics: tuple[str, ...] | None = None
+
+    def __post_init__(self):
+        time_suffix = datetime.now(tz=TIMEZONE).strftime('%Y%m%d_%H%M%S')
+        self.experiment_name = f"{self.experiment_name}-{time_suffix}"
+        if self.enable_aim:
+            self.aim_experiment_name = f"{self.experiment_name}-{time_suffix}"
