@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+from rcss_env.action_mask import ActionMaskResolver
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -37,6 +38,8 @@ def test_build_smoke_request_keeps_optional_grpc_host_only_when_provided() -> No
         agent_image="Cyrus2D/SoccerSimulationProxy",
         time_up=200,
         steps=1,
+        episodes=3,
+        step_log_interval=2,
         grpc_host=None,
     )
 
@@ -51,12 +54,19 @@ def test_build_smoke_request_keeps_optional_grpc_host_only_when_provided() -> No
         "agent_image": "Cyrus2D/SoccerSimulationProxy",
         "time_up": 200,
         "steps": 1,
+        "episodes": 3,
+        "step_log_interval": 2,
     }
 
 
 
 def test_json_safe_handles_pydantic_models_and_numpy_values() -> None:
-    room = RoomInfo(name="room-a", host=IPv4Address("127.0.0.1"), ports={"default": 6666, "mc": 7777})
+    room = RoomInfo(
+        name="room-a",
+        pod=IPv4Address("10.0.0.5"),
+        host=IPv4Address("127.0.0.1"),
+        ports={"default": 6666, "mc": 7777},
+    )
 
     payload = json_safe(
         {
@@ -69,6 +79,7 @@ def test_json_safe_handles_pydantic_models_and_numpy_values() -> None:
     assert payload == {
         "room": {
             "name": "room-a",
+            "pod": "10.0.0.5",
             "host": "127.0.0.1",
             "ports": {"default": 6666, "mc": 7777},
         },
@@ -82,17 +93,17 @@ def test_summarize_agent_payload_describes_masked_observation_mapping() -> None:
     summary = summarize_agent_payload(
         {
             "obs": np.zeros((124,), dtype=np.float32),
-            "act_mask": np.array([1, 0, 1, 1], dtype=np.int8),
+            "action_mask": np.array([1, 0, 1, 1], dtype=np.int8),
         }
     )
 
     assert summary == {
         "kind": "mapping",
-        "keys": ["obs", "act_mask"],
+        "keys": ["obs", ActionMaskResolver.OBSERVATION_KEY],
         "obs_shape": [124],
         "obs_dtype": "float32",
-        "act_mask_shape": [4],
-        "act_mask_active": 3,
+        "action_mask_shape": [4],
+        "action_mask_active": 3,
     }
 
 

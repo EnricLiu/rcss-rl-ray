@@ -5,6 +5,7 @@ from utils.config import ServerConfig
 
 from ..utils import Region
 
+
 class ShootingCurriculumConfig(BaseModel):
     debug: bool = True
     agent_unum: int = Field(ge=1, le=11)
@@ -14,8 +15,12 @@ class ShootingCurriculumConfig(BaseModel):
 
     our_player_num: int = Field(ge=1, le=11)
     oppo_player_num: int = Field(ge=1, le=11)
-    our_goalie_unum: Optional[int] = 1
-    oppo_goalie_unum: Optional[int] = 1
+    our_goalie_unum: Optional[int] = Field(default=1, ge=1, le=11)
+    oppo_goalie_unum: Optional[int] = Field(default=1, ge=1, le=11)
+
+    time_up: int = Field(default=5000, ge=0, le=65535)
+    goal_l: Optional[int] = Field(default=1, ge=0, le=255)
+    goal_r: Optional[int] = Field(default=1, ge=0, le=255)
 
     our_team_name: str = "nexus-prime"
     oppo_team_name: str = "bot"
@@ -25,7 +30,6 @@ class ShootingCurriculumConfig(BaseModel):
 
     player_agent_image: str = "Cyrus2D/SoccerSimulationProxy"
     player_bot_image: str = "HELIOS/helios-base"
-
 
     def model_post_init(self, context: Any, /) -> None:
         if self.agent_unum > self.our_player_num:

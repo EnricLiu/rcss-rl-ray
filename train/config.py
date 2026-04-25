@@ -1,37 +1,68 @@
-from pathlib import Path
+from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
+from typing import Literal
+
+from pydantic import Field
 from pydantic.dataclasses import dataclass
+
+TIMEZONE = timezone(timedelta(hours=+8))
 
 @dataclass
 class TrainConfig:
-    """Hyper-parameter set for the RLlib training loop.
+    """Configuration for curriculum-based RLlib training launched through Tune."""
 
-    Attributes:
-        algo: RLlib algorithm name, e.g. ``"PPO"`` or ``"IMPALA"``.
-        num_env_runners: Number of parallel env-runner workers.
-        num_envs_per_runner: Number of vectorised envs per runner.
-        train_batch_size: Total transitions per SGD update.
-        sgd_minibatch_size: Mini-batch size per SGD pass (PPO only).
-        num_sgd_iter: SGD epochs per training iteration.
-        lr: Optimiser learning rate.
-        gamma: Discount factor.
-        entropy_coeff: Policy entropy regularisation coefficient.
-        clip_param: PPO clipping parameter.
-        num_iterations: Total number of training iterations.
-        checkpoint_freq: Save a checkpoint every N iterations (0 = disabled).
-        checkpoint_path: Directory for storing checkpoints.
-    """
+    # Ray / Tune runtime
+    algo: Literal["PPO"] = "PPO"
+    ray_address: str | None = "auto"
+    experiment_name: str = Field(default_factory=lambda: f"rcss-shooting-{datetime.now(tz=TIMEZONE).strftime('%Y%m%d-%H%M%S')}")
+    storage_path: str | None = None
+    restore_path: str | None = None
+    num_samples: int = Field(default=1, ge=1)
+    metric: str = "env_runners/episode_reward_mean"
+    mode: Literal["min", "max"] = "max"
+    log_to_file: bool = False
 
-    algo: str = "PPO"
-    num_env_runners: int = 2
-    num_envs_per_runner: int = 1
-    train_batch_size: int = 4000
-    sgd_minibatch_size: int = 128
-    num_sgd_iter: int = 10
-    lr: float = 3e-4
-    gamma: float = 0.99
-    entropy_coeff: float = 0.01
-    clip_param: float = 0.3
-    num_iterations: int = 100
-    checkpoint_freq: int = 10
-    checkpoint_path: Path = Path("checkpoints")
+    # PPO / RLlib hyperparameters
+    num_env_runners: int = Field(default=2, ge=0)
+    num_envs_per_runner: int = Field(default=1, ge=1)
+    train_batch_size: int = Field(default=4000, ge=1)
+    sgd_minibatch_size: int = Field(default=128, ge=1)
+    num_sgd_iter: int = Field(default=10, ge=1)
+    lr: float = Field(default=3e-4, gt=0.0)
+    gamma: float = Field(default=0.99, gt=0.0, le=1.0)
+    entropy_coeff: float = Field(default=0.01, ge=0.0)
+    clip_param: float = Field(default=0.3, gt=0.0)
+    num_iterations: int = Field(default=100, ge=1)
+    checkpoint_freq: int = Field(default=10, ge=0)
+    checkpoint_num_to_keep: int | None = Field(default=3, ge=1)
+    checkpoint_at_end: bool = True
+
+    # Infrastructure
+    grpc_host: str = "0.0.0.0"
+    grpc_port: int = Field(default=50051, ge=0, le=65535)
+    allocator_host: str = "rcss-env-allocator.rcss-gateway-dev.svc.cluster.local"
+    allocator_port: int = Field(default=80, ge=1, le=65535)
+
+    # Curriculum selection and shooting curriculum parameters
+    curriculum: Literal["shooting"] = "shooting"
+    curriculum_debug: bool = True
+    agent_unum: int = Field(default=1, ge=1, le=11)
+    team_side: Literal["left", "right", "rand"] = "left"
+    our_player_num: int = Field(default=2, ge=1, le=11)
+    oppo_player_num: int = Field(default=2, ge=1, le=11)
+    our_goalie_unum: int | None = Field(default=1, ge=1, le=11)
+    oppo_goalie_unum: int | None = Field(default=1, ge=1, le=11)
+    our_team_name: str = "nexus-prime"
+    oppo_team_name: str = "bot"
+    player_agent_image: str = "Cyrus2D/SoccerSimulationProxy"
+    player_bot_image: str = "HELIOS/helios-base"
+    time_up: int = Field(default=5000, ge=0, le=65535)
+    goal_l: int | None = Field(default=1, ge=0, le=255)
+    goal_r: int | None = Field(default=1, ge=0, le=255)
+
+    # Aim/Tune logging
+    enable_aim: bool = True
+    aim_repo: str | None = None
+    aim_experiment_name: str | None = None
+    aim_metrics: tuple[str, ...] | None = None

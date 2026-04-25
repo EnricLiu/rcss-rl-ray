@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from train.curriculum import CurriculumMixin
 
+from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
-from schema import GameServerSchema
 from utils.config import ServerConfig
 from client.base.allocator.config import AllocatorConfig
 
 from .bhv import NeckViewBhv
 from .reward import RewardFnMixin, DummyRewardFn
 
-@dataclass
+@dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class EnvConfig:
     """Full configuration required by :class:`RCSSEnv`.
 

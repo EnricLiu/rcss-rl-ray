@@ -123,9 +123,9 @@ class ShootingCurriculum(CurriculumMixin):
 
     def __make_stopping_events(self) -> StoppingEvents:
         ret = StoppingEvents(
-            time_up=5000,
-            goal_l=1,
-            goal_r=1,
+            time_up=self.config.time_up,
+            goal_l=self.config.goal_l,
+            goal_r=self.config.goal_r,
         )
 
         return ret

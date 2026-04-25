@@ -16,7 +16,7 @@ from ray.util import get_node_ip_address
 
 from rcss_env.env import RCSSEnv
 from rcss_env.action_mask import ActionMaskResolver
-from train import make_default_room_schema, make_env_config
+from train.factory import make_shooting_env_config
 
 logger = logging.getLogger(__name__)
 
@@ -345,20 +345,16 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 	episodes = int(request.get("episodes", 1))
 	step_log_interval = max(1, int(request.get("step_log_interval", 1)))
 
-	room_schema = make_default_room_schema(
-		num_agents=num_agents,
-		grpc_host=grpc_ip,
-		grpc_port=grpc_port,
-		bot_image=bot_image,
-		agent_image=agent_image,
-		time_up=time_up,
-	)
-	env_config = make_env_config(
-		grpc_host=grpc_ip,
+	env_config = make_shooting_env_config(
+		grpc_host=str(grpc_ip),
 		grpc_port=grpc_port,
 		allocator_host=allocator_host,
 		allocator_port=allocator_port,
-		gs_schema=room_schema,
+		our_player_num=num_agents,
+		oppo_player_num=num_agents,
+		time_up=time_up,
+		player_agent_image=agent_image,
+		player_bot_image=bot_image,
 	)
 
 	env = RCSSEnv(env_config)
