@@ -12,7 +12,6 @@ from ray.rllib.utils.typing import PolicyID
 logger = logging.getLogger(__name__)
 
 class RCSSCallbacks(DefaultCallbacks):
-
     def on_episode_end(
         self,
         *,

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from client.base.allocator import AllocatorClient
 	from .env import RCSSEnv
+	from .config import EnvConfig
 	from .grpc_srv.batch_queue import BatchQueue
 	from .grpc_srv.proto import pb2, pb2_grpc
 	from .grpc_srv.servicer import GameServicer, serve
@@ -21,12 +22,13 @@ _EXPORTS = {
 	"BatchQueue": (".grpc_srv", "BatchQueue"),
 	"GameServicer": (".grpc_srv", "GameServicer"),
 	"RCSSEnv": (".env", "RCSSEnv"),
+	"EnvConfig": (".config", "EnvConfig"),
 	"pb2": (".grpc_srv", "pb2"),
 	"pb2_grpc": (".grpc_srv", "pb2_grpc"),
 	"serve": (".grpc_srv", "serve"),
 }
 
-__all__ = ["AllocatorClient", "GameServicer", "RCSSEnv", "pb2"]
+__all__ = ["AllocatorClient", "GameServicer", "RCSSEnv", "EnvConfig", "pb2"]
 
 
 def __getattr__(name: str):

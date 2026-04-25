@@ -6,13 +6,13 @@ PlayerAction message.  Supported action types: catch, dash, kick, move, tackle, 
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 from itertools import count
 from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
-from cachetools import cached
+from functools import cache
 from gymnasium import spaces
 
 from .grpc_srv.proto import pb2
@@ -38,7 +38,7 @@ class Action:
     CATCH = "catch"
     DASH = "dash"
     KICK = "kick"
-    MOVE = "move"
+    # MOVE = "move"
     TACKLE = "tackle"
     TURN = "turn"
 
@@ -60,11 +60,11 @@ class Action:
             "power": (0.0, 100.0),
             "relative_direction": (-180.0, 180.0),
         },
-        MOVE: {
-            "cls": pb2.Move,
-            "x": (-1.0, 1.0),
-            "y": (-1.0, 1.0),
-        },
+        # MOVE: {
+        #     "cls": pb2.Move,
+        #     "x": (-1.0, 1.0),
+        #     "y": (-1.0, 1.0),
+        # },
         TACKLE: {
             "cls": pb2.Tackle,
             "power_or_dir": (0.0, 100.0),
@@ -100,6 +100,10 @@ class Action:
     def action_name(cls, index: int) -> str:
         """Return the action name for a discrete action index."""
         return cls.action_names()[index]
+
+    @classmethod
+    def params_len(cls) -> int:
+        return sum(len(info)-1 for info in cls.ALL_ACTIONS.values())
 
     def get_pb2_name(self) -> str:
         return self.action_names()[self.action]
@@ -145,7 +149,7 @@ class Action:
         return pb2.PlayerAction(**{ self.get_pb2_name(): self.get_action() })
 
     @classmethod
-    @cached(cache={})
+    @cache
     def n_actions(cls) -> int:
         """Return the total number of discrete actions."""
         return len(cls.action_names())
@@ -169,6 +173,75 @@ class Action:
         action = action_dict["actions"]
         params = action_dict["params"]
         return Action(action=action, params=params)
+
+    @classmethod
+    def of(cls, action: str, **kwargs) -> Action:
+        idx = cls.action_index(action)
+        params = np.zeros(cls.params_len())
+
+        action_infos: list[dict[str, Any]] = list(cls.ALL_ACTIONS.values())
+        action_info = action_infos[idx].copy()
+        action_info.pop("cls")
+        # Compute the offset of this action's params within the global param vector
+        param_start_idx = sum(len(info) - 1 for info in action_infos[:idx])
+        for param_idx, (param_name, constraints) in zip(count(start=param_start_idx), action_info.items()):
+            if param_name == "cls": continue
+            if (param := cast(float, kwargs.get(param_name))) is None:
+                raise ValueError(f"Parameter '{param_name}' is required.")
+
+            if isinstance(constraints, tuple) and len(constraints) == 2:
+                # Continuous range: linear map [low, high] -> [PARAM_LOW, PARAM_HIGH]
+                low, high = constraints
+                if low == high:
+                    raise ValueError(f"The constraint is invalid: {constraints}")
+                if param > high or param < low:
+                    raise ValueError(f"The value of parameter '{param_name}' is provided with param={param}, which is out of the constraint [{low}, {high}].")
+
+                params[param_idx] = cls.PARAM_LOW + (param - low) * (cls.PARAM_HIGH - cls.PARAM_LOW) / (high - low)
+
+            elif isinstance(constraints, set):
+                if param not in constraints:
+                    raise ValueError(f"The value of parameter '{param_name}' is provided with param={param}, while {constraints} is required.")
+
+                # Discrete value set: linear map [least, most] -> [PARAM_LOW, PARAM_HIGH], return the position
+                least, most = min(constraints), max(constraints)
+                if least == most:
+                    raise ValueError(f"The constraint is invalid: {constraints}")
+
+                params[param_idx] = cls.PARAM_LOW + (param - least) * (cls.PARAM_HIGH - cls.PARAM_LOW) / (most - least)
+
+            else:
+                raise ValueError(f"Invalid constraints for parameter '{param_name}': {constraints}")
+
+        return Action(
+            action=idx,
+            params=params,
+        )
+
+    @classmethod
+    def catch(cls) -> Action:
+        return Action.of(cls.CATCH)
+
+    @classmethod
+    def dash(cls, power: float, relative_direction: float) -> Action:
+        return Action.of(cls.DASH, power=power, relative_direction=relative_direction)
+
+    @classmethod
+    def kick(cls, power: float, relative_direction: float) -> Action:
+        return Action.of(cls.KICK, power=power, relative_direction=relative_direction)
+
+    # @classmethod
+    # def move(cls, x: float, y: float) -> Action:
+    #     return Action.of(cls.MOVE, x=x, y=y)
+
+    @classmethod
+    def tackle(cls, power_or_dir: float, foul: bool) -> Action:
+        foul_flag = 1 if foul else 0
+        return Action.of(cls.TACKLE, power_or_dir=power_or_dir, foul=foul_flag)
+
+    @classmethod
+    def turn(cls, relative_direction: float) -> Action:
+        return Action.of(cls.TURN, relative_direction=relative_direction)
 
     @classmethod
     def mask_from_allowed(cls, names: Iterable[str]) -> np.ndarray:

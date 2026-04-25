@@ -1,11 +1,9 @@
-"""Training hyper-parameter configuration."""
-
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic.dataclasses import dataclass
 
-
-class TrainConfig(BaseModel):
+@dataclass
+class TrainConfig:
     """Hyper-parameter set for the RLlib training loop.
 
     Attributes:

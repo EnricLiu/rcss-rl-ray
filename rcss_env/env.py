@@ -16,15 +16,17 @@ from gymnasium import spaces
 from ray.rllib.env import MultiAgentEnv
 
 from schema import GameServerSchema, TeamSide
-from config import EnvConfig, BhvConfig
+from client.room import RoomClient
+from client.base.allocator import AllocatorClient
+from train.curriculum import CurriculumMixin
 
-from . import obs as observation
-from . import reward
-
+from .bhv import NeckViewBhv
+from .reward import RewardFnMixin
+from .config import EnvConfig
 from .action import Action
 from .action_mask import ActionMaskResolver
-from client.base.allocator import AllocatorClient
-from client.room import RoomClient
+from . import obs as observation
+
 from .grpc_srv.proto import pb2
 from .grpc_srv.servicer import GameServicer
 
@@ -45,6 +47,9 @@ class RCSSEnv(MultiAgentEnv):
 
     def __init__(self, config: EnvConfig) -> None:
         self.__cfg = config
+
+        self.__schema = self.config.curriculum.make_schema()
+        self.__reward_fn = self.config.curriculum.reward_fn()
 
         self.agent_team = self.schema.teams.agent_team
         self.agent_team_unums = set([agent.unum for agent in self.agent_team.ssp_agents()])
@@ -104,13 +109,21 @@ class RCSSEnv(MultiAgentEnv):
         return self.__cfg
 
     @property
-    def bhv(self) -> BhvConfig:
+    def bhv(self) -> NeckViewBhv:
         return self.config.bhv
+
+    @property
+    def reward(self) -> RewardFnMixin:
+        return self.__reward_fn
+
+    @property
+    def curriculum(self) -> CurriculumMixin:
+        return self.config.curriculum
 
     @property
     def schema(self) -> GameServerSchema:
         """Return the RoomSchema used by this environment."""
-        return self.config.room
+        return self.__schema
 
     @property
     def allocator(self) -> AllocatorClient:
@@ -191,14 +204,14 @@ class RCSSEnv(MultiAgentEnv):
         self.__reset_servicer_state()
 
         # 4. Request a new room from the allocator
-        schema = self.config.room
+        self.__schema = self.curriculum.make_schema()
+        self.__reward_fn = self.curriculum.reward_fn()
         try:
-            room = self.allocator.request_room(schema)
+            self.__room = self.allocator.request_room(self.__schema)
         except RuntimeError as exc:
             raise gymnasium.error.ResetNeeded(
                 "Cannot allocate simulation room"
             ) from exc
-        self.__room = room
 
         try:
             self.room.rcss.trainer.start()
@@ -234,7 +247,6 @@ class RCSSEnv(MultiAgentEnv):
         dict[int, dict[str, Any]],
     ]:
         """Execute one simulation step: send actions -> collect new states -> compute outputs."""
-        import time
 
         # 1. Encode each agent's action to a protobuf message and send them
         logger.warning(
@@ -244,26 +256,15 @@ class RCSSEnv(MultiAgentEnv):
             self.__timestep,
         )
         actions = self.__gather_actions(action_dict)
-
-        t0 = time.perf_counter()
-        logger.warning("Step %d: sending actions to servicer", self.__timestep)
         self.__get_servicer().send_actions(actions)
-        t1 = time.perf_counter()
-        logger.warning("Step %d: actions sent in %.3fs", self.__timestep, t1 - t0)
 
         # 2. Collect new states and compare with the previous step for rewards
         self.__prev_states = self.__curr_states
         logger.warning("Step %d: waiting for states from simulation", self.__timestep)
         curr_states = self.__collect_states()
         self.__curr_states = curr_states
-        t2 = time.perf_counter()
 
         self.__timestep = next(iter(curr_states.values())).world_model.cycle
-        cycles = {u: s.world_model.cycle for u, s in curr_states.items() if s.world_model}
-        logger.warning(
-            "Step %d: states collected in %.3fs — unums=%s cycles=%s",
-            self.__timestep, t2 - t1, sorted(curr_states.keys()), cycles,
-        )
 
         rewards = {
             unum: self.__calc_reward(unum, self.__prev_states.get(unum), curr_state)
@@ -292,17 +293,13 @@ class RCSSEnv(MultiAgentEnv):
     ]:
         try:
             return self.__step(action_dict)
-        except gymnasium.error.ResetNeeded as e:
-            logger.error("Reset needed: %s. Returning empty observations and terminated/truncated=True for all agents. Runtime diagnostics: %s",)
-            unums = self.agent_team_unums
-
-            obs = {unum: None for unum in unums}
-            rewards = {unum: None for unum in unums}
-            terminateds = {unum: True for unum in unums}
-            truncateds = {unum: True for unum in unums}
-            infos = {unum: None for unum in unums}
-
-            return obs, rewards, terminateds, truncateds, infos
+        except gymnasium.error.ResetNeeded as exc:
+            logger.error(
+                "Reset needed during step: %s. Returning truncated terminal payload. Runtime diagnostics: %s",
+                exc,
+                self.runtime_diagnostics(),
+            )
+            return self.__reset_needed_step_result(exc)
 
 
     def close(self) -> None:
@@ -396,13 +393,30 @@ class RCSSEnv(MultiAgentEnv):
         return prev_state.full_world_model
 
     def __collect_states(self, timeout_s: float = 180.0) -> dict[int, pb2.State]:
-        """Block until all registered agents have sent their State."""
+        """
+        Block until all registered agents have sent their State.
+        Returns when States are aligned and GameModeType is PlayOn.
+        """
         try:
-            states = self.__get_servicer().fetch_states(timeout=timeout_s)
-            if len(missing := self.agent_team_unums.difference(states.keys())) != 0:
-                raise ValueError(f"Missing states for unums: {sorted(missing)}")
+            while True:
+                states = self.__get_servicer().fetch_states(timeout=timeout_s)
+                if len(missing := self.agent_team_unums.difference(states.keys())) != 0:
+                    raise ValueError(f"Missing states for unums: {sorted(missing)}")
 
-            return states
+                keys = list(states.keys())
+                if len(keys) == 0:
+                    raise RuntimeError(f"No states returned by __collect_states!")
+
+                if (wm := states[keys[0]].world_model).game_mode_type != pb2.GameModeType.PlayOn:
+                    logger.info(
+                        "[__collect_states@ts=%d] GameMode=%s. Sending Idle Actions.",
+                        wm.cycle,
+                        wm.game_mode_type,
+                    )
+                    self.__get_servicer().send_actions(self.__idle_action(unums=set(states.keys())))
+                else:
+                    return states
+
         except Exception as exc:
             logger.warning(
                 "Timeout fetching states for world models: %s runtime=%s",
@@ -438,14 +452,28 @@ class RCSSEnv(MultiAgentEnv):
             }
         return obs
 
+    def __zero_obs(self) -> dict[str, np.ndarray]:
+        return {
+            "obs": np.zeros((self.obs_dim,), dtype=np.float32),
+            ActionMaskResolver.OBSERVATION_KEY: Action.full_action_mask(),
+        }
+
+    def __terminal_obs(self) -> dict[int, dict[str, np.ndarray]]:
+        cached_obs = self.__states_to_obs(self.__curr_states) if self.__curr_states else {}
+        obs: dict[int, dict[str, np.ndarray]] = {}
+        for unum in self.agent_team_unums:
+            obs[unum] = cached_obs.get(unum, self.__zero_obs())
+        return obs
+
     @staticmethod
     def __state_cycles(states: dict[int, pb2.State]) -> dict[int, int]:
         """Extract world-model cycles from a unum->State mapping."""
         ret: dict[int, int] = {}
         for unum, state in states.items():
-            world_model = getattr(state, "world_model", None)
-            if world_model is not None:
-                ret[unum] = world_model.cycle
+            if state is not None and state.world_model is not None:
+                ret[unum] = state.world_model.cycle
+            else:
+                logger.warning("State for unum=%d is missing or has no world_model; cannot extract cycle", unum)
         return ret
 
     def __validate_action_mask(self, unum: int, action_dict: dict[str, Any]) -> None:
@@ -472,6 +500,20 @@ class RCSSEnv(MultiAgentEnv):
 
         return ret
 
+    def __idle_action(self, unums: set[int]) -> dict[int, pb2.PlayerActions]:
+        ret = {}
+        for unum in unums:
+            wm_opt = self.__latest_obs_wm(unum)
+            neck_act = self.bhv.neck.parse(wm_opt)
+            view_act = self.bhv.view.parse(wm_opt)
+
+            actions = (neck_act, view_act)
+            actions = pb2.PlayerActions(actions=actions)
+
+            ret[unum] = actions
+
+        return ret
+
     def __action_mask(self, unum: int) -> np.ndarray:
         state = self.__latest_state(unum)
         wm = state.world_model if state is not None else None
@@ -481,9 +523,8 @@ class RCSSEnv(MultiAgentEnv):
 
         return ret
 
-
-    @staticmethod
     def __calc_reward(
+        self,
         unum: int,
         prev_states: pb2.State | None,
         curr_states: pb2.State,
@@ -512,7 +553,7 @@ class RCSSEnv(MultiAgentEnv):
         prev_obs_wm: pb2.WorldModel = prev_obs
         prev_truth_wm: pb2.WorldModel = prev_truth
 
-        ret = reward.calculate(
+        ret = self.reward.compute(
             prev_obs_wm,
             prev_truth_wm,
             curr_obs,
@@ -562,6 +603,42 @@ class RCSSEnv(MultiAgentEnv):
             else:
                 infos[unum] = {"step": self.__timestep}
         return infos
+
+    def __reset_needed_infos(self, exc: gymnasium.error.ResetNeeded) -> dict[int, dict[str, Any]]:
+        curr_wms = {
+            unum: state.world_model
+            for unum, state in self.__curr_states.items()
+            if state is not None and state.world_model is not None
+        }
+        infos = self.__collect_infos(curr_wms)
+        for unum in self.agent_team_unums:
+            info = infos.setdefault(unum, {"step": self.__timestep})
+            info["reset_needed"] = True
+            info["error_type"] = type(exc).__name__
+            info["error_message"] = str(exc)
+        return infos
+
+    def __reset_needed_step_result(
+        self,
+        exc: gymnasium.error.ResetNeeded,
+    ) -> tuple[
+        dict[int, dict[str, np.ndarray]],
+        dict[int, float],
+        dict[Any, bool],
+        dict[Any, bool],
+        dict[int, dict[str, Any]],
+    ]:
+        obs = self.__terminal_obs()
+        rewards = {unum: 0.0 for unum in self.agent_team_unums}
+
+        terminateds: dict[Any, bool] = {unum: False for unum in self.agent_team_unums}
+        terminateds["__all__"] = False
+
+        truncateds: dict[Any, bool] = {unum: True for unum in self.agent_team_unums}
+        truncateds["__all__"] = True
+
+        infos = self.__reset_needed_infos(exc)
+        return obs, rewards, terminateds, truncateds, infos
 
     # ------------------------------------------------------------------
     # Miscellaneous helpers

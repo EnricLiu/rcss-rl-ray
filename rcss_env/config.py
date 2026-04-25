@@ -2,25 +2,29 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from train.curriculum import CurriculumMixin
 
-from client.base.allocator.config import AllocatorConfig
+from pydantic.dataclasses import dataclass
+
 from schema import GameServerSchema
-from .bhv import BhvConfig
-from .server import ServerConfig
+from utils.config import ServerConfig
+from client.base.allocator.config import AllocatorConfig
 
+from .bhv import NeckViewBhv
+from .reward import RewardFnMixin, DummyRewardFn
 
-class EnvConfig(BaseModel):
+@dataclass
+class EnvConfig:
     """Full configuration required by :class:`RCSSEnv`.
 
     Attributes:
-        room: GameServer schema (teams, stopping conditions, referee, etc.).
         grpc: gRPC server settings for SoccerSimulationProxy sidecar connections.
         allocator: REST connection settings for the room allocator service.
     """
 
-    room: GameServerSchema
     grpc: ServerConfig
     allocator: AllocatorConfig
+    curriculum: CurriculumMixin
 
-    bhv: BhvConfig = BhvConfig()
+    bhv: NeckViewBhv = NeckViewBhv()
+    reward: RewardFnMixin = DummyRewardFn()
