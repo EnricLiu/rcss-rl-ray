@@ -71,6 +71,8 @@ def build_ppo_config(
             minibatch_size=train_cfg.sgd_minibatch_size,
             num_epochs=train_cfg.num_sgd_iter,
             lr=train_cfg.lr,
+            lambda_=0.95,
+            vf_clip_param=50.0,
             gamma=train_cfg.gamma,
             entropy_coeff=train_cfg.entropy_coeff,
             clip_param=train_cfg.clip_param,
