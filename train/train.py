@@ -62,6 +62,9 @@ def build_ppo_config(
         .env_runners(
             num_env_runners=train_cfg.num_env_runners,
             num_envs_per_env_runner=train_cfg.num_envs_per_runner,
+            num_cpus_per_env_runner=train_cfg.num_cpus_per_runner,
+            num_gpus_per_env_runner=0,
+
         )
         .training(
             train_batch_size=train_cfg.train_batch_size,
@@ -199,6 +202,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # PPO / RLlib hyperparameters
     parser.add_argument("--num-env-runners", type=int, default=defaults.num_env_runners)
     parser.add_argument("--num-envs-per-runner", type=int, default=defaults.num_envs_per_runner)
+    parser.add_argument("--num-cpus-per-runner", type=float, default=defaults.num_cpus_per_runner)
     parser.add_argument("--train-batch-size", type=int, default=defaults.train_batch_size)
     parser.add_argument("--sgd-minibatch-size", type=int, default=defaults.sgd_minibatch_size)
     parser.add_argument("--num-sgd-iter", type=int, default=defaults.num_sgd_iter)
