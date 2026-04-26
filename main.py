@@ -271,10 +271,10 @@ def collect_room_diagnostics(env: RCSSEnv) -> dict[str, Any]:
 
 	for name, probe in probes.items():
 		started_at = perf_counter()
-		logger.warning("room diagnostics: starting probe=%s room=%s", name, env.room.info.name)
+		logger.debug("room diagnostics: starting probe=%s room=%s", name, env.room.info.name)
 		try:
 			diagnostics[name] = json_safe(probe())
-			logger.warning(
+			logger.debug(
 				"room diagnostics: probe=%s completed in %.3fs",
 				name,
 				perf_counter() - started_at,
@@ -390,7 +390,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 	current_episode_record: dict[str, Any] | None = None
 
 	try:
-		logger.warning(
+		logger.info(
 			"starting env durability smoke: grpc_host=%s grpc_port=%d episodes=%d steps_per_episode=%d num_agents=%d",
 			grpc_host,
 			grpc_port,
@@ -401,10 +401,10 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 		current_phase = "allocator_probe"
 		allocator_version = env.allocator.fleet_get_template_version()
 		result["allocator_template_version"] = allocator_version
-		logger.warning("allocator template version: %s", allocator_version)
+		logger.info("allocator template version: %s", allocator_version)
 		result["allocator_health"] = env.allocator.health_check()
 		result["allocator_ready"] = env.allocator.readiness_check()
-		logger.warning(
+		logger.info(
 			"allocator readiness: health=%s ready=%s",
 			result["allocator_health"],
 			result["allocator_ready"],
@@ -419,7 +419,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 				"steps_requested": steps,
 				"step_log_interval": step_log_interval,
 			}
-			logger.warning("episode %d/%d: reset start", episode_idx, episodes)
+			logger.info("episode %d/%d: reset start", episode_idx, episodes)
 
 			current_phase = "reset"
 			reset_started_at = perf_counter()
@@ -436,7 +436,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 			current_episode_record["reset_contract"] = reset_contract
 			_record_contract_issues(result, f"episode_{episode_idx}.reset", reset_contract["issues"])
 
-			logger.warning(
+			logger.info(
 				"episode %d/%d: reset done in %.3fs obs_agents=%s",
 				episode_idx,
 				episodes,
@@ -446,7 +446,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 
 			current_phase = "post_reset_diagnostics"
 			current_episode_record["post_reset_diagnostics"] = collect_runtime_snapshot(env)
-			logger.warning(
+			logger.debug(
 				"episode %d/%d: room=%s rcss=%s mc=%s",
 				episode_idx,
 				episodes,
@@ -498,7 +498,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 					or bool(truncateds.get("__all__"))
 				)
 				if should_log_step:
-					logger.warning(
+					logger.debug(
 						"episode %d/%d step %d/%d: duration=%.3fs reward_sum=%.3f terminated=%s truncated=%s obs_agents=%s",
 						episode_idx,
 						episodes,
@@ -548,7 +548,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 				raise RuntimeError("episode record unexpectedly missing during smoke finalization")
 			completed_episode_record = current_episode_record
 			cast(list[dict[str, Any]], result["episodes"]).append(completed_episode_record)
-			logger.warning(
+			logger.info(
 				"episode %d/%d finished: steps_completed=%d done_reason=%s reward_sum=%.3f final_scores=%s",
 				episode_idx,
 				episodes,
@@ -560,7 +560,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 			current_episode_record = None
 
 		result["success"] = True
-		logger.warning(
+		logger.info(
 			"env durability smoke finished successfully: episodes_completed=%d steps_completed=%d contract_ok=%s",
 			result["totals"]["episodes_completed"],
 			result["totals"]["steps_completed"],
@@ -611,7 +611,7 @@ def run_env_smoke(request: Mapping[str, Any]) -> dict[str, Any]:
 		return result
 	finally:
 		try:
-			logger.warning("closing env smoke resources")
+			logger.debug("closing env smoke resources")
 			env.close()
 		except Exception as exc:  # pragma: no cover - exercised against live cluster
 			logger.error("failed to close env smoke resources: %s: %s", type(exc).__name__, str(exc))
@@ -710,7 +710,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 		"--step-log-interval",
 		type=int,
 		default=1,
-		help="Emit warning logs every N steps within each episode",
+		help="Emit progress logs every N steps within each episode",
 	)
 	parser.add_argument("--time-up", type=int, default=200)
 	parser.add_argument("--bot-image", type=str, default="HELIOS/helios-base")

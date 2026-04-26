@@ -126,16 +126,16 @@ class BaseApiClient:
         expect_envelope: bool = True,
     ) -> Any:
 
-        logger.info(f"[{method}] -> {self.client.base_url}{path}, json: {json}, params: {params}")
+        logger.debug("[%s] -> %s%s json=%r params=%r", method, self.client.base_url, path, json, params)
         response = self.client.request(
             method,
             path,
             json=dump_json_payload(json),
             params=params,
         )
-        logger.debug(f"[{method}] <- {self.client.base_url}{path}, response: {response.text}")
+        logger.debug("[%s] <- %s%s response=%s", method, self.client.base_url, path, response.text)
 
         res = unwrap_response(response, expect_envelope=expect_envelope)
-        logger.info(f"[{method}] <- {self.client.base_url}{path}, resp payload: {res}")
+        logger.debug("[%s] <- %s%s payload=%r", method, self.client.base_url, path, res)
 
         return res

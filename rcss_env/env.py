@@ -231,10 +231,10 @@ class RCSSEnv(MultiAgentEnv):
 
         try:
             self.room.rcss.trainer.start()
-            logger.info("Requested room %s from allocator and started simulation", self.room.info.name)
+            logger.debug("Requested room %s from allocator and started simulation", self.room.info.name)
             # 5. Wait for all agent sidecars to send their initial states
             states = self.__collect_states()
-            logger.warning(
+            logger.debug(
                 "Reset: collected initial states for unums=%s cycles=%s",
                 sorted(states.keys()),
                 self.__state_cycles(states),
@@ -265,7 +265,7 @@ class RCSSEnv(MultiAgentEnv):
         """Execute one simulation step: send actions -> collect new states -> compute outputs."""
 
         # 1. Encode each agent's action to a protobuf message and send them
-        logger.warning(
+        logger.debug(
             "Step %d: gathering actions for unums=%s from current_cycles=%s",
             self.__timestep,
             sorted(action_dict.keys()),
@@ -276,7 +276,7 @@ class RCSSEnv(MultiAgentEnv):
 
         # 2. Collect new states and compare with the previous step for rewards
         self.__prev_states = self.__curr_states
-        logger.warning("Step %d: waiting for states from simulation", self.__timestep)
+        logger.debug("Step %d: waiting for states from simulation", self.__timestep)
         curr_states = self.__collect_states()
         self.__curr_states = curr_states
 
@@ -310,7 +310,7 @@ class RCSSEnv(MultiAgentEnv):
         try:
             return self.__step(action_dict)
         except gymnasium.error.ResetNeeded as exc:
-            logger.error(
+            logger.warning(
                 "Reset needed during step: %s. Returning truncated terminal payload. Runtime diagnostics: %s",
                 exc,
                 self.runtime_diagnostics(),
@@ -432,7 +432,7 @@ class RCSSEnv(MultiAgentEnv):
                     raise RuntimeError(f"No states returned by __collect_states!")
 
                 if (wm := states[keys[0]].world_model).game_mode_type != pb2.GameModeType.PlayOn:
-                    logger.info(
+                    logger.debug(
                         "[__collect_states@ts=%d] GameMode=%s. Sending Idle Actions.",
                         wm.cycle,
                         wm.game_mode_type,
@@ -522,7 +522,7 @@ class RCSSEnv(MultiAgentEnv):
             if state is not None and state.world_model is not None:
                 ret[unum] = state.world_model.cycle
             else:
-                logger.warning("State for unum=%d is missing or has no world_model; cannot extract cycle", unum)
+                logger.debug("State for unum=%d is missing or has no world_model; cannot extract cycle", unum)
         return ret
 
     def __validate_action_mask(self, unum: int, action_dict: dict[str, Any]) -> None:
@@ -530,7 +530,7 @@ class RCSSEnv(MultiAgentEnv):
         act_mask = self.__action_mask(unum)
         if not Action.is_action_allowed(discrete_action, act_mask):
             action_name = Action.action_name(discrete_action)
-            logger.warning(f"Action {action_name!r} (index={discrete_action}) is masked out for agent unum={unum}")
+            logger.debug("Action %r (index=%d) is masked out for agent unum=%d", action_name, discrete_action, unum)
 
     def __gather_actions(self, action_dict: dict[int, Any]) -> dict[int, pb2.PlayerActions]:
         ret = {}
@@ -590,7 +590,7 @@ class RCSSEnv(MultiAgentEnv):
             prev_truth = prev_states.full_world_model
 
         if curr_states is None:
-            logger.warning(f"Current state for unum={unum} is missing; cannot compute reward. ")
+            logger.warning("Current state for unum=%d is missing; cannot compute reward", unum)
             return 0.0
 
         curr_obs = curr_states.world_model

@@ -26,8 +26,13 @@ python -m train.train \
     --num-iterations 500 \
     --checkpoint-freq 20
 
-# Local config/debug run without Aim.
-python -m train.train --ray-address local --disable-aim --num-env-runners 0 --num-iterations 1
+# Local config/debug run without Aim. Use a writable local Tune storage path.
+python -m train.train \
+    --ray-address local \
+    --disable-aim \
+    --storage-path /tmp/ray-results \
+    --num-env-runners 0 \
+    --num-iterations 1
 
 # Restore an existing Tune experiment.
 python -m train.train --restore /mnt/ray-results/shooting-ppo
@@ -87,9 +92,10 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--ray-address` | `auto` | Ray address; use `local` or `none` for local `ray.init()` |
-| `--experiment-name` | `rcss-shooting-ppo` | Tune experiment name |
-| `--storage-path` | None | Shared Tune results/checkpoint path |
+| `--experiment-name` | `rcss-shooting` | Tune experiment name prefix |
+| `--storage-path` | `/mnt/ray/storage` | Shared Tune results/checkpoint root |
 | `--restore` | None | Restore an existing Tune experiment path |
+| `--timestamp-experiment-name` / `--no-timestamp-experiment-name` | true | Append a local timestamp to the Tune experiment name |
 | `--num-samples` | 1 | Number of Tune samples/trials |
 | `--metric` | `env_runners/episode_reward_mean` | Tune optimization/checkpoint metric |
 | `--mode` | `max` | Tune metric mode |
@@ -140,6 +146,11 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | `--time-up` | 5000 | Episode time limit |
 | `--goal-l` | 1 | Stop after left-side goals; pass `none` to disable |
 | `--goal-r` | 1 | Stop after right-side goals; pass `none` to disable |
+| `--reward-goal` | 10.0 | Sparse reward for each goal scored by the learning team |
+| `--reward-concede` | 10.0 | Sparse penalty magnitude for each goal conceded |
+| `--reward-out-of-bounds` | 1.0 | Penalty magnitude when the ball exits the field outside the goal mouth |
+| `--reward-ball-to-goal-shaping` | 1.0 | Weight for dense ball-to-goal progress shaping |
+| `--reward-time-decay` | 0.001 | Per-cycle penalty encouraging faster scoring |
 
 ### Aim and Logging
 
@@ -147,7 +158,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 |----------|---------|-------------|
 | `--disable-aim` | false | Disable Tune Aim callback |
 | `--aim-repo` | None | Aim repository path or URI |
-| `--aim-experiment-name` | experiment name | Aim experiment name override |
+| `--aim-experiment-name` | experiment name | Aim experiment name override; defaults to the final Tune experiment name |
 | `--aim-metrics` | None | Comma-separated Tune metric allowlist |
 | `--log-to-file` | false | Ask Tune to redirect logs to files |
 | `--log-level` | `INFO` | Python logging level |
@@ -156,5 +167,5 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 
 - The training path currently supports PPO and uses the legacy RLlib ModelV2 stack because `RCSSFCNet` extends `TorchModelV2`.
 - Aim logging is enabled by default. The project declares `aim` for Python versions below 3.13 because Aim's native dependency is not available for CPython 3.13 from PyPI.
-- `ShootingReward.compute()` is still the curriculum-specific reward hook to complete before expecting meaningful learning curves.
+- `ShootingReward.compute()` uses full-information `truth` world models where available, combining sparse score deltas, non-goal out-of-bounds penalty, ball-to-goal progress shaping, and a small cycle-based time decay.
 
