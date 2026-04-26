@@ -80,7 +80,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | **RCSSEnv**         | `rcss_env/env.py`       | MultiAgentEnv: reset/step/close lifecycle         |
 | **ShootingCurriculum** | `train/curriculum/shooting/` | Builds room schema and reward for shooting tasks |
 | **RCSSFCNet**       | `train/models/fcnet.py` | Custom FC network: trunk -> policy head + value head |
-| **RCSSCallbacks**   | `train/callbacks.py`    | Episode-end metric logging (scores, steps)        |
+| **RCSSCallbacks**   | `train/callbacks.py`    | Episode metrics + mirrored top-level checkpoint score logging |
 | **Action**          | `rcss_env/action.py`    | Hybrid discrete+continuous -> protobuf mapping    |
 | **Observation**     | `rcss_env/obs.py`       | WorldModel -> 124-d normalised feature vector     |
 | **Reward**          | `rcss_env/reward.py`    | Goal-difference reward function                   |
@@ -97,7 +97,9 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | `--restore` | None | Restore an existing Tune experiment path |
 | `--timestamp-experiment-name` / `--no-timestamp-experiment-name` | true | Append a local timestamp to the Tune experiment name |
 | `--num-samples` | 1 | Number of Tune samples/trials |
-| `--metric` | `env_runners/episode_reward_mean` | Tune optimization/checkpoint metric |
+| `--metric` | `env_runners/episode_reward_mean` | Tune optimization / best-trial metric |
+| `--checkpoint-metric` | `checkpoint_score` | Top-level mirrored metric used for checkpoint retention |
+| `--checkpoint-source-metric` | `env_runners/episode_reward_mean` | Source metric path mirrored into `--checkpoint-metric` |
 | `--mode` | `max` | Tune metric mode |
 | `--checkpoint-freq` | 10 | Checkpoint every N training iterations |
 | `--checkpoint-num-to-keep` | 3 | Number of checkpoints to keep; pass `none` for unlimited |

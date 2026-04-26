@@ -8,6 +8,7 @@ from train.callbacks import RCSSCallbacks
 from train.factory import build_env_config
 from train.train import (
     ENV_NAME,
+    build_callbacks_class,
     build_ppo_config,
     build_run_config,
     build_train_config,
@@ -153,6 +154,9 @@ def test_build_ppo_config_keeps_registered_env_and_legacy_model_stack() -> None:
     assert ppo_config.enable_rl_module_and_learner is False
     assert ppo_config.enable_env_runner_and_connector_v2 is False
     assert ppo_config.model["custom_model"] == "rcss_fcnet"
+    assert issubclass(ppo_config.callbacks_class, RCSSCallbacks)
+    assert ppo_config.callbacks_class.CHECKPOINT_SCORE_ATTRIBUTE == cfg.checkpoint_metric
+    assert ppo_config.callbacks_class.CHECKPOINT_SCORE_SOURCE_ATTRIBUTE == cfg.checkpoint_source_metric
 
 
 def test_build_tune_config_and_run_config_without_aim() -> None:
@@ -179,10 +183,43 @@ def test_build_tune_config_and_run_config_without_aim() -> None:
     run_config = build_run_config(cfg)
 
     assert tune_config.num_samples == 2
+    assert tune_config.metric == cfg.metric
     assert run_config.name == "unit-train"
     assert run_config.stop == {"training_iteration": cfg.num_iterations}
     assert run_config.callbacks == []
     assert run_config.checkpoint_config.checkpoint_frequency == 0
+    assert run_config.checkpoint_config.checkpoint_score_attribute == cfg.checkpoint_metric
+
+
+def test_checkpoint_source_metric_defaults_to_tune_metric() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--metric",
+                "custom_metrics/score_mean",
+            ]
+        )
+    )
+
+    assert cfg.metric == "custom_metrics/score_mean"
+    assert cfg.checkpoint_source_metric == cfg.metric
+
+
+def test_callbacks_mirror_nested_checkpoint_metric_to_top_level() -> None:
+    cfg = build_train_config(parse_args(["--ray-address", "local", "--disable-aim"]))
+    callbacks = build_callbacks_class(cfg)()
+    result = {
+        "env_runners": {
+            "episode_reward_mean": 12.5,
+        }
+    }
+
+    callbacks.on_train_result(algorithm=None, result=result)
+
+    assert result[cfg.checkpoint_metric] == pytest.approx(12.5)
 
 
 def test_callbacks_aggregate_reward_breakdown_into_custom_metrics() -> None:

@@ -22,6 +22,8 @@ class TrainConfig:
     timestamp_experiment_name: bool = True
     num_samples: int = Field(default=1, ge=1)
     metric: str = "env_runners/episode_reward_mean"
+    checkpoint_metric: str = "checkpoint_score"
+    checkpoint_source_metric: str | None = None
     mode: Literal["min", "max"] = "max"
     log_to_file: bool = False
 
@@ -36,9 +38,9 @@ class TrainConfig:
     gamma: float = Field(default=0.99, gt=0.0, le=1.0)
     entropy_coeff: float = Field(default=0.01, ge=0.0)
     clip_param: float = Field(default=0.3, gt=0.0)
-    num_iterations: int = Field(default=100, ge=1)
+    num_iterations: int = Field(default=1000, ge=1)
     checkpoint_freq: int = Field(default=10, ge=0)
-    checkpoint_num_to_keep: int | None = Field(default=3, ge=1)
+    checkpoint_num_to_keep: int | None = Field(default=20, ge=1)
     checkpoint_at_end: bool = True
 
     # Infrastructure
@@ -85,6 +87,9 @@ class TrainConfig:
         if self.timestamp_experiment_name:
             time_suffix = datetime.now(tz=TIMEZONE).strftime("%Y%m%d_%H%M%S")
             self.experiment_name = f"{self.experiment_name}-{time_suffix}"
+
+        if self.checkpoint_source_metric is None:
+            self.checkpoint_source_metric = self.metric
 
         if self.enable_aim and self.aim_experiment_name is None:
             self.aim_experiment_name = self.experiment_name

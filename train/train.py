@@ -35,6 +35,14 @@ def default_policy_mapping_fn(
     return DEFAULT_POLICY_ID
 
 
+def build_callbacks_class(train_cfg: TrainConfig):
+    class ConfiguredRCSSCallbacks(RCSSCallbacks):
+        CHECKPOINT_SCORE_ATTRIBUTE = train_cfg.checkpoint_metric
+        CHECKPOINT_SCORE_SOURCE_ATTRIBUTE = train_cfg.checkpoint_source_metric
+
+    return ConfiguredRCSSCallbacks
+
+
 def build_ppo_config(
     train_cfg: TrainConfig,
     env_config: EnvConfig,
@@ -46,6 +54,8 @@ def build_ppo_config(
 
     register_env(ENV_NAME, _env_creator)
     register_model()
+
+    callbacks_class = build_callbacks_class(train_cfg)
 
     config = (
         PPOConfig()
@@ -84,7 +94,7 @@ def build_ppo_config(
                 },
             },
         )
-        .callbacks(RCSSCallbacks)
+        .callbacks(callbacks_class)
         .framework("torch")
         .multi_agent(
             policies={DEFAULT_POLICY_ID},
@@ -119,7 +129,7 @@ def build_tune_callbacks(train_cfg: TrainConfig) -> list[Any]:
 def build_run_config(train_cfg: TrainConfig) -> tune.RunConfig:
     checkpoint_config = tune.CheckpointConfig(
         num_to_keep=train_cfg.checkpoint_num_to_keep,
-        checkpoint_score_attribute=train_cfg.metric,
+        checkpoint_score_attribute=train_cfg.checkpoint_metric,
         checkpoint_score_order=train_cfg.mode,
         checkpoint_frequency=train_cfg.checkpoint_freq,
         checkpoint_at_end=train_cfg.checkpoint_at_end,
@@ -199,6 +209,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timestamp-experiment-name", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--num-samples", type=int, default=defaults.num_samples)
     parser.add_argument("--metric", type=str, default=defaults.metric)
+    parser.add_argument("--checkpoint-metric", type=str, default=defaults.checkpoint_metric)
+    parser.add_argument("--checkpoint-source-metric", type=str, default=None)
     parser.add_argument("--mode", choices=["min", "max"], default=defaults.mode)
     parser.add_argument("--log-to-file", action="store_true", default=defaults.log_to_file)
 
@@ -277,6 +289,8 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         timestamp_experiment_name=args.timestamp_experiment_name,
         num_samples=args.num_samples,
         metric=args.metric,
+        checkpoint_metric=args.checkpoint_metric,
+        checkpoint_source_metric=args.checkpoint_source_metric,
         mode=args.mode,
         log_to_file=args.log_to_file,
         num_env_runners=args.num_env_runners,
