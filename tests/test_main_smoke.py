@@ -7,6 +7,7 @@ import sys
 
 import numpy as np
 from rcss_env.action_mask import ActionMaskResolver
+from rcss_env import obs as observation
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -92,7 +93,7 @@ def test_json_safe_handles_pydantic_models_and_numpy_values() -> None:
 def test_summarize_agent_payload_describes_masked_observation_mapping() -> None:
     summary = summarize_agent_payload(
         {
-            "obs": np.zeros((124,), dtype=np.float32),
+            "obs": np.zeros((observation.dim(),), dtype=np.float32),
             "action_mask": np.array([1, 0, 1, 1], dtype=np.int8),
         }
     )
@@ -100,7 +101,7 @@ def test_summarize_agent_payload_describes_masked_observation_mapping() -> None:
     assert summary == {
         "kind": "mapping",
         "keys": ["obs", ActionMaskResolver.OBSERVATION_KEY],
-        "obs_shape": [124],
+        "obs_shape": [observation.dim()],
         "obs_dtype": "float32",
         "action_mask_shape": [4],
         "action_mask_active": 3,
