@@ -190,6 +190,10 @@ class RCSSEnv(MultiAgentEnv):
         """Reset the environment: allocate a new simulation room and return initial observations."""
         super().reset(seed=seed, options=options)
 
+        # 0. make rand schema, set the reward fn
+        self.__schema = self.curriculum.make_schema()
+        self.__reward_fn = self.curriculum.reward_fn()
+
         # Clear episode-local caches up-front so a failed reset cannot leak the
         # previous episode's state into the next one.
         self.__reset_episode_state()
@@ -197,15 +201,13 @@ class RCSSEnv(MultiAgentEnv):
         # 1. Release the previous room
         self._cleanup_room()
 
-        # 2. Ensure the gRPC server is running
+        # 2. Ensure the gRPC server is running, sync the actual grpc server
+        # addr to the self.__schema
         self._start_grpc_server()
 
         # 3. Flush servicer internal buffers
         self.__reset_servicer_state()
 
-        # 4. Request a new room from the allocator
-        self.__schema = self.curriculum.make_schema()
-        self.__reward_fn = self.curriculum.reward_fn()
         try:
             self.__room = self.allocator.request_room(self.__schema)
         except RuntimeError as exc:
