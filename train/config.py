@@ -66,8 +66,14 @@ class TrainConfig:
     reward_goal: float = Field(default=10.0, ge=0.0)
     reward_concede: float = Field(default=10.0, ge=0.0)
     reward_out_of_bounds: float = Field(default=1.0, ge=0.0)
+    reward_kickable_bonus: float = Field(default=0.5, ge=0.0)
+    reward_agent_to_ball_shaping: float = Field(default=1.0, ge=0.0)
     reward_ball_to_goal_shaping: float = Field(default=1.0, ge=0.0)
+    reward_ball_velocity_to_goal: float = Field(default=0.05, ge=0.0)
+    gamma_shaping: float = Field(default=0.99, ge=0.0, le=1.0)
+    shaping_clip: float = Field(default=0.1, gt=0.0)
     reward_time_decay: float = Field(default=0.001, ge=0.0)
+    max_cycle_gap: int = Field(default=5, ge=1)
 
     # Aim/Tune logging
     enable_aim: bool = True

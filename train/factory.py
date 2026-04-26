@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import IPvAnyAddress
 from typing import Literal
 
 from client.base.allocator.config import AllocatorConfig
@@ -16,7 +17,7 @@ def make_allocator_config(host: str, port: int) -> AllocatorConfig:
 
 
 def make_server_config(host: str, port: int) -> ServerConfig:
-    return ServerConfig(host=host, port=port)
+    return ServerConfig(host=IPvAnyAddress(host), port=port)
 
 
 def build_shooting_curriculum_config(train_cfg: TrainConfig) -> ShootingCurriculumConfig:
@@ -39,8 +40,14 @@ def build_shooting_curriculum_config(train_cfg: TrainConfig) -> ShootingCurricul
         reward_goal=train_cfg.reward_goal,
         reward_concede=train_cfg.reward_concede,
         reward_out_of_bounds=train_cfg.reward_out_of_bounds,
+        reward_kickable_bonus=train_cfg.reward_kickable_bonus,
+        reward_agent_to_ball_shaping=train_cfg.reward_agent_to_ball_shaping,
         reward_ball_to_goal_shaping=train_cfg.reward_ball_to_goal_shaping,
+        reward_ball_velocity_to_goal=train_cfg.reward_ball_velocity_to_goal,
+        gamma_shaping=train_cfg.gamma_shaping,
+        shaping_clip=train_cfg.shaping_clip,
         reward_time_decay=train_cfg.reward_time_decay,
+        max_cycle_gap=train_cfg.max_cycle_gap,
     )
 
 

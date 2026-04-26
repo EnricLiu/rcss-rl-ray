@@ -93,6 +93,7 @@ class RCSSEnv(MultiAgentEnv):
         # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
         self.__curr_states: dict[int, pb2.State] = {}
+        self.__last_reward_breakdowns: dict[int, dict[str, float]] = {}
         self.__player_by_unum = {
             player.unum: player
             for player in self.agent_team.players
@@ -282,11 +283,12 @@ class RCSSEnv(MultiAgentEnv):
 
         self.__timestep = next(iter(curr_states.values())).world_model.cycle
 
-        rewards = {
-            unum: self.__calc_reward(unum, self.__prev_states.get(unum), curr_state)
-            for unum, curr_state in curr_states.items()
-            if unum in self.agent_team_unums
-        }
+        self.__last_reward_breakdowns = {}
+        rewards: dict[int, float] = {}
+        for unum, curr_state in curr_states.items():
+            if unum not in self.agent_team_unums:
+                continue
+            rewards[unum] = self.__calc_reward(unum, self.__prev_states.get(unum), curr_state)
 
         curr_wms = {unum: state.world_model for unum, state in curr_states.items()}
 
@@ -456,6 +458,7 @@ class RCSSEnv(MultiAgentEnv):
         self.__timestep = 0
         self.__prev_states = {}
         self.__curr_states = {}
+        self.__last_reward_breakdowns = {}
 
     def __reset_servicer_state(self) -> None:
         """Reset the servicer and restore the authoritative set of agent unums."""
@@ -608,6 +611,9 @@ class RCSSEnv(MultiAgentEnv):
             curr_obs,
             curr_truth,
         )
+
+        self.__last_reward_breakdowns[unum] = self.reward.last_reward_breakdown
+
         return ret
 
     def __check_done(
@@ -651,6 +657,9 @@ class RCSSEnv(MultiAgentEnv):
                 }
             else:
                 infos[unum] = {"step": self.__timestep}
+
+            if reward_breakdown := self.__last_reward_breakdowns.get(unum):
+                infos[unum]["reward_breakdown"] = reward_breakdown.copy()
         return infos
 
     def __reset_needed_infos(self, exc: gymnasium.error.ResetNeeded) -> dict[int, dict[str, Any]]:

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
+import pytest
+
+from train.callbacks import RCSSCallbacks
 from train.factory import build_env_config
 from train.train import (
     ENV_NAME,
@@ -11,6 +16,20 @@ from train.train import (
     parse_args,
 )
 from train.curriculum.shooting import ShootingCurriculum
+
+
+class _FakeEpisode:
+    def __init__(self) -> None:
+        self._infos: dict[int, dict[str, Any]] = {}
+        self.user_data: dict[str, Any] = {}
+        self.custom_metrics: dict[str, float] = {}
+        self.length = 0
+
+    def get_agents(self) -> list[int]:
+        return list(self._infos.keys())
+
+    def last_info_for(self, agent_id: int) -> dict[str, Any] | None:
+        return self._infos.get(agent_id)
 
 
 def test_build_train_config_parses_tune_and_aim_flags() -> None:
@@ -84,8 +103,20 @@ def test_build_env_config_uses_shooting_curriculum() -> None:
                 "321",
                 "--reward-goal",
                 "12.5",
+                "--reward-kickable-bonus",
+                "0.7",
+                "--reward-agent-to-ball-shaping",
+                "1.8",
                 "--reward-time-decay",
                 "0.02",
+                "--reward-ball-velocity-to-goal",
+                "0.12",
+                "--gamma-shaping",
+                "0.97",
+                "--shaping-clip",
+                "0.08",
+                "--max-cycle-gap",
+                "7",
             ]
         )
     )
@@ -98,7 +129,13 @@ def test_build_env_config_uses_shooting_curriculum() -> None:
     assert env_cfg.allocator.base_url == "http://allocator.default.svc:8080"
     assert isinstance(env_cfg.curriculum, ShootingCurriculum)
     assert env_cfg.curriculum.config.reward_goal == 12.5
+    assert env_cfg.curriculum.config.reward_kickable_bonus == 0.7
+    assert env_cfg.curriculum.config.reward_agent_to_ball_shaping == 1.8
+    assert env_cfg.curriculum.config.reward_ball_velocity_to_goal == 0.12
+    assert env_cfg.curriculum.config.gamma_shaping == 0.97
+    assert env_cfg.curriculum.config.shaping_clip == 0.08
     assert env_cfg.curriculum.config.reward_time_decay == 0.02
+    assert env_cfg.curriculum.config.max_cycle_gap == 7
     assert schema.stopping.time_up == 321
     assert len(schema.teams.agent_team.players) == 3
     assert len(opponent_team.players) == 2
@@ -146,3 +183,72 @@ def test_build_tune_config_and_run_config_without_aim() -> None:
     assert run_config.stop == {"training_iteration": cfg.num_iterations}
     assert run_config.callbacks == []
     assert run_config.checkpoint_config.checkpoint_frequency == 0
+
+
+def test_callbacks_aggregate_reward_breakdown_into_custom_metrics() -> None:
+    callbacks = RCSSCallbacks()
+    episode = _FakeEpisode()
+
+    callbacks.on_episode_start(
+        worker=None,
+        base_env=None,
+        policies={},
+        episode=cast(Any, episode),
+        env_index=0,
+    )
+
+    episode._infos = {
+        1: {
+            "scores": {"our": 0, "their": 0},
+            "step": 1,
+            "reward_breakdown": {
+                "goal": 0.0,
+                "agent_to_ball_shaping": 0.2,
+                "time_decay": -0.01,
+            },
+        }
+    }
+    callbacks.on_episode_step(
+        worker=None,
+        base_env=None,
+        policies={},
+        episode=cast(Any, episode),
+        env_index=0,
+    )
+
+    episode._infos = {
+        1: {
+            "scores": {"our": 1, "their": 0},
+            "step": 2,
+            "reward_breakdown": {
+                "goal": 10.0,
+                "agent_to_ball_shaping": 0.1,
+                "time_decay": -0.01,
+            },
+        }
+    }
+    callbacks.on_episode_step(
+        worker=None,
+        base_env=None,
+        policies={},
+        episode=cast(Any, episode),
+        env_index=0,
+    )
+    callbacks.on_episode_end(
+        worker=None,
+        base_env=None,
+        policies={},
+        episode=cast(Any, episode),
+        env_index=0,
+    )
+
+    assert episode.custom_metrics["episode_our_score"] == 1.0
+    assert episode.custom_metrics["episode_their_score"] == 0.0
+    assert episode.custom_metrics["episode_steps"] == 2.0
+    assert episode.custom_metrics["reward_goal_total"] == 10.0
+    assert episode.custom_metrics["reward_goal_per_step"] == 5.0
+    assert episode.custom_metrics["reward_agent_to_ball_shaping_total"] == pytest.approx(0.3)
+    assert episode.custom_metrics["reward_agent_to_ball_shaping_per_step"] == pytest.approx(0.15)
+    assert episode.custom_metrics["reward_time_decay_total"] == pytest.approx(-0.02)
+
+

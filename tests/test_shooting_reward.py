@@ -209,3 +209,16 @@ def test_last_breakdown_is_populated() -> None:
     bd = reward.last_breakdown
     assert bd.agent_to_ball_shaping > 0.0
     assert bd.total() == pytest.approx(total)
+
+
+def test_reward_fn_mixin_breakdown_dict_is_populated() -> None:
+    reward = _reward()
+    prev = _world_model(self_x=0.0, ball_x=20.0, cycle=1)
+    curr = _world_model(self_x=10.0, ball_x=20.0, cycle=2)
+
+    total = reward.compute(prev, prev, curr, curr)
+
+    breakdown = reward.last_reward_breakdown
+    assert breakdown["agent_to_ball_shaping"] > 0.0
+    assert sum(breakdown.values()) == pytest.approx(total)
+

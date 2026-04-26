@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from typing import Any
+from typing import Any, cast
 
 import ray
 from ray import tune
@@ -62,7 +62,7 @@ def build_ppo_config(
         .env_runners(
             num_env_runners=train_cfg.num_env_runners,
             num_envs_per_env_runner=train_cfg.num_envs_per_runner,
-            num_cpus_per_env_runner=train_cfg.num_cpus_per_runner,
+            num_cpus_per_env_runner=cast(Any, train_cfg.num_cpus_per_runner),
             num_gpus_per_env_runner=0,
 
         )
@@ -73,6 +73,7 @@ def build_ppo_config(
             lr=train_cfg.lr,
             lambda_=0.95,
             vf_clip_param=50.0,
+            vf_share_layers=False,
             gamma=train_cfg.gamma,
             entropy_coeff=train_cfg.entropy_coeff,
             clip_param=train_cfg.clip_param,
@@ -242,8 +243,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reward-goal", type=float, default=defaults.reward_goal)
     parser.add_argument("--reward-concede", type=float, default=defaults.reward_concede)
     parser.add_argument("--reward-out-of-bounds", type=float, default=defaults.reward_out_of_bounds)
+    parser.add_argument("--reward-kickable-bonus", type=float, default=defaults.reward_kickable_bonus)
+    parser.add_argument("--reward-agent-to-ball-shaping", type=float, default=defaults.reward_agent_to_ball_shaping)
     parser.add_argument("--reward-ball-to-goal-shaping", type=float, default=defaults.reward_ball_to_goal_shaping)
+    parser.add_argument("--reward-ball-velocity-to-goal", type=float, default=defaults.reward_ball_velocity_to_goal)
+    parser.add_argument("--gamma-shaping", type=float, default=defaults.gamma_shaping)
+    parser.add_argument("--shaping-clip", type=float, default=defaults.shaping_clip)
     parser.add_argument("--reward-time-decay", type=float, default=defaults.reward_time_decay)
+    parser.add_argument("--max-cycle-gap", type=int, default=defaults.max_cycle_gap)
 
     # Aim
     parser.add_argument("--disable-aim", dest="enable_aim", action="store_false", default=defaults.enable_aim)
@@ -307,8 +314,14 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         reward_goal=args.reward_goal,
         reward_concede=args.reward_concede,
         reward_out_of_bounds=args.reward_out_of_bounds,
+        reward_kickable_bonus=args.reward_kickable_bonus,
+        reward_agent_to_ball_shaping=args.reward_agent_to_ball_shaping,
         reward_ball_to_goal_shaping=args.reward_ball_to_goal_shaping,
+        reward_ball_velocity_to_goal=args.reward_ball_velocity_to_goal,
+        gamma_shaping=args.gamma_shaping,
+        shaping_clip=args.shaping_clip,
         reward_time_decay=args.reward_time_decay,
+        max_cycle_gap=args.max_cycle_gap,
         enable_aim=args.enable_aim,
         aim_repo=args.aim_repo,
         aim_experiment_name=args.aim_experiment_name,

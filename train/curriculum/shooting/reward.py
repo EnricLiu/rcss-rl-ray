@@ -111,12 +111,16 @@ class RewardBreakdown:
     ball_velocity_to_goal: float = 0.0
     time_decay: float = 0.0
 
+    def to_dict(self) -> dict[str, float]:
+        return {key: float(value) for key, value in asdict(self).items()}
+
     def total(self) -> float:
-        return float(sum(asdict(self).values()))
+        return float(sum(self.to_dict().values()))
 
 
 class ShootingReward(RewardFnMixin):
     def __init__(self, config: ShootingCurriculumConfig):
+        super().__init__()
         self.config = config
         # Last computed breakdown — exposed for callbacks / tests.
         self.last_breakdown: RewardBreakdown = RewardBreakdown()
@@ -142,6 +146,7 @@ class ShootingReward(RewardFnMixin):
         prev_wm = prev_truth if prev_truth is not None else prev_obs
         if prev_wm is None:
             self.last_breakdown = RewardBreakdown()
+            self.reset_reward_breakdown()
             return 0.0
         curr_wm = curr_truth
 
@@ -207,4 +212,5 @@ class ShootingReward(RewardFnMixin):
             bd.time_decay = -cfg.reward_time_decay * cycle_gap
 
         self.last_breakdown = bd
+        self.set_reward_breakdown(bd.to_dict())
         return bd.total()
