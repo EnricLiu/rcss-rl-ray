@@ -6,15 +6,16 @@ PlayerAction message.  Supported action types: catch, dash, kick, move, tackle, 
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable, cast
 from itertools import count
 from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
+from functools import cache
 from gymnasium import spaces
 
-from .grpc_srv import pb2
+from .grpc_srv.proto import pb2
 
 
 @dataclass
@@ -33,35 +34,43 @@ class Action:
     PARAM_LOW = -1.0
     PARAM_HIGH = 1.0
 
+    # DO NOT CHANGE, should align with pb2 defination
+    CATCH = "catch"
+    DASH = "dash"
+    KICK = "kick"
+    # MOVE = "move"
+    TACKLE = "tackle"
+    TURN = "turn"
+
     # All supported action types and their parameter constraints.
     # Each entry: key = action name, value = dict where "cls" is the protobuf
     # message class and the remaining key-value pairs map parameter names to
     # constraints (tuple = continuous range, set = discrete value set).
     ALL_ACTIONS = OrderedDict({
-        "catch": {
+        CATCH: {
             "cls": pb2.Catch,
         },
-        "dash": {
+        DASH: {
             "cls": pb2.Dash,
             "power": (0.0, 100.0),
             "relative_direction": (-180.0, 180.0),
         },
-        "kick": {
+        KICK: {
             "cls": pb2.Kick,
             "power": (0.0, 100.0),
             "relative_direction": (-180.0, 180.0),
         },
-        "move": {
-            "cls": pb2.Move,
-            "x": (-1.0, 1.0),
-            "y": (-1.0, 1.0),
-        },
-        "tackle": {
+        # MOVE: {
+        #     "cls": pb2.Move,
+        #     "x": (-1.0, 1.0),
+        #     "y": (-1.0, 1.0),
+        # },
+        TACKLE: {
             "cls": pb2.Tackle,
             "power_or_dir": (0.0, 100.0),
             "foul": {0, 1},
         },
-        "turn": {
+        TURN: {
             "cls": pb2.Turn,
             "relative_direction": (-180.0, 180.0),
         }
@@ -74,7 +83,32 @@ class Action:
     def __get_action(self, cls, config: dict[str, Any]):
         pass
 
-    def get_action(self):
+    @classmethod
+    def action_names(cls) -> tuple[str, ...]:
+        """Return the discrete action names in the exact encoded order."""
+        return tuple(cls.ALL_ACTIONS.keys())
+
+    @classmethod
+    def action_index(cls, name: str) -> int:
+        """Return the encoded discrete index for an action name."""
+        try:
+            return cls.action_names().index(name)
+        except ValueError as exc:
+            raise KeyError(f"Unknown action name: {name}") from exc
+
+    @classmethod
+    def action_name(cls, index: int) -> str:
+        """Return the action name for a discrete action index."""
+        return cls.action_names()[index]
+
+    @classmethod
+    def params_len(cls) -> int:
+        return sum(len(info)-1 for info in cls.ALL_ACTIONS.values())
+
+    def get_pb2_name(self) -> str:
+        return self.action_names()[self.action]
+
+    def get_action(self) -> pb2.Catch | pb2.Dash | pb2.Kick | pb2.Move | pb2.Tackle | pb2.Turn:
         """Convert the discrete index + continuous params into a protobuf action message.
 
         Each parameter component is linearly mapped from [PARAM_LOW, PARAM_HIGH] to
@@ -111,10 +145,14 @@ class Action:
 
         return cls(**action_params)
 
+    def to_player_action(self) -> pb2.PlayerAction:
+        return pb2.PlayerAction(**{ self.get_pb2_name(): self.get_action() })
+
     @classmethod
+    @cache
     def n_actions(cls) -> int:
         """Return the total number of discrete actions."""
-        return len(cls.ALL_ACTIONS.keys())
+        return len(cls.action_names())
 
     @classmethod
     def n_action_params(cls) -> int:
@@ -135,3 +173,105 @@ class Action:
         action = action_dict["actions"]
         params = action_dict["params"]
         return Action(action=action, params=params)
+
+    @classmethod
+    def of(cls, action: str, **kwargs) -> Action:
+        idx = cls.action_index(action)
+        params = np.zeros(cls.params_len())
+
+        action_infos: list[dict[str, Any]] = list(cls.ALL_ACTIONS.values())
+        action_info = action_infos[idx].copy()
+        action_info.pop("cls")
+        # Compute the offset of this action's params within the global param vector
+        param_start_idx = sum(len(info) - 1 for info in action_infos[:idx])
+        for param_idx, (param_name, constraints) in zip(count(start=param_start_idx), action_info.items()):
+            if param_name == "cls": continue
+            if (param := cast(float, kwargs.get(param_name))) is None:
+                raise ValueError(f"Parameter '{param_name}' is required.")
+
+            if isinstance(constraints, tuple) and len(constraints) == 2:
+                # Continuous range: linear map [low, high] -> [PARAM_LOW, PARAM_HIGH]
+                low, high = constraints
+                if low == high:
+                    raise ValueError(f"The constraint is invalid: {constraints}")
+                if param > high or param < low:
+                    raise ValueError(f"The value of parameter '{param_name}' is provided with param={param}, which is out of the constraint [{low}, {high}].")
+
+                params[param_idx] = cls.PARAM_LOW + (param - low) * (cls.PARAM_HIGH - cls.PARAM_LOW) / (high - low)
+
+            elif isinstance(constraints, set):
+                if param not in constraints:
+                    raise ValueError(f"The value of parameter '{param_name}' is provided with param={param}, while {constraints} is required.")
+
+                # Discrete value set: linear map [least, most] -> [PARAM_LOW, PARAM_HIGH], return the position
+                least, most = min(constraints), max(constraints)
+                if least == most:
+                    raise ValueError(f"The constraint is invalid: {constraints}")
+
+                params[param_idx] = cls.PARAM_LOW + (param - least) * (cls.PARAM_HIGH - cls.PARAM_LOW) / (most - least)
+
+            else:
+                raise ValueError(f"Invalid constraints for parameter '{param_name}': {constraints}")
+
+        return Action(
+            action=idx,
+            params=params,
+        )
+
+    @classmethod
+    def catch(cls) -> Action:
+        return Action.of(cls.CATCH)
+
+    @classmethod
+    def dash(cls, power: float, relative_direction: float) -> Action:
+        return Action.of(cls.DASH, power=power, relative_direction=relative_direction)
+
+    @classmethod
+    def kick(cls, power: float, relative_direction: float) -> Action:
+        return Action.of(cls.KICK, power=power, relative_direction=relative_direction)
+
+    # @classmethod
+    # def move(cls, x: float, y: float) -> Action:
+    #     return Action.of(cls.MOVE, x=x, y=y)
+
+    @classmethod
+    def tackle(cls, power_or_dir: float, foul: bool) -> Action:
+        foul_flag = 1 if foul else 0
+        return Action.of(cls.TACKLE, power_or_dir=power_or_dir, foul=foul_flag)
+
+    @classmethod
+    def turn(cls, relative_direction: float) -> Action:
+        return Action.of(cls.TURN, relative_direction=relative_direction)
+
+    @classmethod
+    def mask_from_allowed(cls, names: Iterable[str]) -> np.ndarray:
+        """Build an ``action_mask`` vector from allowed action names."""
+        allowed = set(names)
+        return np.asarray(
+            [1 if action_name in allowed else 0 for action_name in cls.action_names()],
+            dtype=np.int8,
+        )
+
+    @classmethod
+    def mask_from_blocked(cls, names: Iterable[str]) -> np.ndarray:
+        """Build an ``action_mask`` vector from blocked action names."""
+        blocked = set(names)
+        return np.asarray(
+            [0 if action_name in blocked else 1 for action_name in cls.action_names()],
+            dtype=np.int8,
+        )
+
+    @classmethod
+    def full_action_mask(cls) -> np.ndarray:
+        """Return a permissive mask where all discrete actions are enabled."""
+        return np.ones(cls.n_actions(), dtype=np.int8)
+
+    @classmethod
+    def is_action_allowed(cls, action: int, action_mask: np.ndarray | None) -> bool:
+        """Check whether a discrete action index is enabled by the given mask."""
+        if action_mask is None:
+            return True
+        if action < 0 or action >= len(action_mask):
+            return False
+        return bool(np.asarray(action_mask)[action])
+

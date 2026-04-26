@@ -7,12 +7,14 @@ built on top of [Ray](https://ray.io/) and [RLlib](https://docs.ray.io/en/latest
 
 ```mermaid
 flowchart TB
-    subgraph Training ["Training Loop (train.py)"]
+    subgraph Training ["Ray Tune Training (train/train.py)"]
         direction TB
-        AlgoSelect["Algorithm Selection\n(PPO / IMPALA)"]
-        PolicyMap["Multi-Agent Policy Mapping\n(left_i / right_i)"]
-        Checkpoint["Checkpoint Manager"]
-        AlgoSelect --> PolicyMap --> Checkpoint
+        Tune["Tune Tuner\n(single trial / future search)"]
+        Curriculum["Curriculum Factory\n(ShootingCurriculum)"]
+        PPO["PPOConfig\ncustom model + action mask"]
+        Aim["AimLoggerCallback\n(optional AimStack metrics)"]
+        Tune --> Curriculum --> PPO
+        Tune -. metrics .-> Aim
     end
 
     subgraph Model ["Neural Network (models/fcnet.py)"]
@@ -74,7 +76,8 @@ flowchart TB
 
 - **Multi-Agent Reinforcement Learning (MARL)** — simultaneous training of multiple soccer-playing agents
 - **RoboCup Soccer Simulation (RCSS)** — 2D simulated soccer competition environment
-- **Ray / RLlib** — distributed RL training framework (PPO, IMPALA)
+- **Ray Tune / RLlib** — distributed experiment orchestration and PPO training
+- **Curriculum** — room schema and reward construction selected by training config
 - **Hybrid Action Space** — discrete action-type selection combined with continuous parameters
 - **gRPC** — high-performance RPC for real-time agent–simulator communication
 - **Gymnasium MultiAgentEnv** — standard multi-agent environment interface
