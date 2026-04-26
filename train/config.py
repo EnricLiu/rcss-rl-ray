@@ -52,7 +52,7 @@ class TrainConfig:
     agent_unum: int = Field(default=2, ge=1, le=11)
     team_side: Literal["left", "right", "rand"] = "left"
     our_player_num: int = Field(default=2, ge=1, le=11)
-    oppo_player_num: int = Field(default=2, ge=1, le=11)
+    oppo_player_num: int = Field(default=1, ge=1, le=11)
     our_goalie_unum: int | None = Field(default=1, ge=1, le=11)
     oppo_goalie_unum: int | None = Field(default=1, ge=1, le=11)
     our_team_name: str = "nexus-prime"
