@@ -16,23 +16,31 @@ import threading
 from time import perf_counter
 from typing import Any
 
+import gymnasium
 import grpc
 from grpc import aio as grpc_aio
 
 from .proto import pb2
 from .proto import pb2_grpc
-from .batch_queue import BatchQueue
+from .batch_queue import BatchQueue, BatchQueueError
 
 logger = logging.getLogger(__name__)
 
 # Timeout constants (seconds)
-STATE_GET_TIMEOUT_S = 2
-STATE_SEND_TIMEOUT_S = 2
-ACTION_GET_TIMEOUT_S = 30
-ACTION_SEND_TIMEOUT_S = 2
+STATE_GET_TIMEOUT_S = 5
+ACTION_GET_TIMEOUT_S = 300
+ACTION_SEND_TIMEOUT_S = 5
 
 # Timeout for a single action queue put (prevents event-loop deadlock when queue is full)
 ACTION_PUT_TIMEOUT_S = 5.0
+
+
+class ActionTimeoutError(RuntimeError):
+    """Raised when a sidecar waits too long for RL actions."""
+
+
+class SyncSetRuntimeError(RuntimeError):
+    """Raised when a per-unum runtime failure would otherwise shrink the sync set."""
 
 
 class GameServicer(pb2_grpc.GameServicer):
@@ -54,6 +62,7 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_state_cycles: dict[int, int] = {}
         self._last_get_action_meta: dict[int, dict[str, Any]] = {}
         self._last_action_send_meta: dict[int, dict[str, Any]] = {}
+        self._runtime_error: Exception | None = None
 
         self._server_params: pb2.ServerParam | None = None
         self._player_params: pb2.PlayerParam | None = None
@@ -108,6 +117,10 @@ class GameServicer(pb2_grpc.GameServicer):
                 str(unum): dict(meta)
                 for unum, meta in sorted(self._last_action_send_meta.items())
             },
+            "runtime_error": None if self._runtime_error is None else {
+                "type": type(self._runtime_error).__name__,
+                "message": str(self._runtime_error),
+            },
             "state_queue_sizes": {
                 str(unum): queue.qsize()
                 for unum, queue in sorted(self._states_queues.items())
@@ -118,6 +131,15 @@ class GameServicer(pb2_grpc.GameServicer):
             },
             "batcher": self._batcher.snapshot(),
         }
+
+    def _set_runtime_error(self, exc: Exception) -> None:
+        if self._runtime_error is None:
+            self._runtime_error = exc
+
+    def _raise_if_runtime_error(self) -> None:
+        if self._runtime_error is None:
+            return
+        raise gymnasium.error.ResetNeeded(str(self._runtime_error)) from self._runtime_error
 
     # ------------------------------------------------------------------
     # gRPC RPC handlers (called by the sidecar)
@@ -137,19 +159,22 @@ class GameServicer(pb2_grpc.GameServicer):
         }
 
         if action_q is None:
-            logger.warning(
-                "GetPlayerActions from unregistered unum=%d cycle=%d; returning empty actions",
-                unum, cycle,
+            exc = SyncSetRuntimeError(
+                f"GetPlayerActions received state for unregistered unum={unum} cycle={cycle}"
             )
-            return None
+            self._set_runtime_error(exc)
+            logger.error("%s snapshot=%s", exc, self.debug_snapshot())
+            raise exc
 
         if not self._batcher.has(unum):
-            self.unregister(unum)
-            logger.error(
-                "Received state for batcher-unregistered unum=%d cycle=%d; unregistering and returning empty actions",
-                unum, cycle,
+            exc = SyncSetRuntimeError(
+                f"Received state for batcher-unregistered unum={unum} cycle={cycle}"
             )
-            return None
+            self._set_runtime_error(exc)
+            # Preserve the sync set and fail fast instead of silently shrinking it.
+            # self.unregister(unum)
+            logger.error("%s snapshot=%s", exc, self.debug_snapshot())
+            raise exc
 
         if previous_meta is not None:
             previous_cycle = previous_meta.get("cycle")
@@ -162,7 +187,15 @@ class GameServicer(pb2_grpc.GameServicer):
             )
 
         logger.debug("__get_action: unum=%d cycle=%d — submitting to batcher", unum, cycle)
-        await self._batcher.put(unum, state.world_model.cycle, state)
+        try:
+            await self._batcher.put(unum, state.world_model.cycle, state)
+        except BatchQueueError as exc:
+            wrapped = SyncSetRuntimeError(
+                f"Failed to submit state for unum={unum} cycle={cycle} to batcher: {exc}"
+            )
+            self._set_runtime_error(wrapped)
+            logger.error("%s snapshot=%s", wrapped, self.debug_snapshot())
+            raise wrapped from exc
         logger.debug("__get_action: unum=%d cycle=%d — waiting for action (timeout=%ds)", unum, cycle, ACTION_GET_TIMEOUT_S)
 
         try:
@@ -172,15 +205,19 @@ class GameServicer(pb2_grpc.GameServicer):
         except asyncio.TimeoutError:
             self._last_get_action_meta[unum]["timed_out_waiting_for_action"] = True
             self._last_get_action_meta[unum]["waited_s"] = round(perf_counter() - started_at, 6)
+            exc = ActionTimeoutError(
+                f"Timed out waiting for RL actions for unum={unum} cycle={cycle} after {ACTION_GET_TIMEOUT_S}s"
+            )
+            self._set_runtime_error(exc)
             logger.warning(
                 "Timeout waiting for actions for unum=%d cycle=%d — "
-                "batcher_unums=%s action_q_size=%d snapshot=%s; returning empty actions",
+                "batcher_unums=%s action_q_size=%d snapshot=%s; marking runtime as failed",
                 unum, cycle,
                 sorted(self._batcher.unums()),
                 action_q.qsize(),
                 self.debug_snapshot(),
             )
-            return pb2.PlayerActions()
+            raise exc
 
         self._last_get_action_meta[unum]["timed_out_waiting_for_action"] = False
         self._last_get_action_meta[unum]["waited_s"] = round(perf_counter() - started_at, 6)
@@ -268,6 +305,8 @@ class GameServicer(pb2_grpc.GameServicer):
             logger.debug("__fetch_states: no state queues registered — returning cached states %s", sorted(self._states.keys()))
             return self._states.copy()
 
+        self._batcher.raise_if_failed()
+
         expected_unums = sorted(u for u, _ in queue_items)
         logger.debug(
             "__fetch_states: waiting for states from unums=%s timeout=%.1fs snapshot=%s",
@@ -282,14 +321,16 @@ class GameServicer(pb2_grpc.GameServicer):
         ]
 
         res = await asyncio.gather(*tasks, return_exceptions=True)
+        failures: list[tuple[int, Exception]] = []
         for (unum, _), item in zip(queue_items, res):
             if isinstance(item, Exception):
-                self.unregister(unum)
-                logger.warning(
-                    "__fetch_states: timeout/error waiting for state from unum=%d (%s); "
-                    "unregistered. batcher_unums=%s snapshot=%s",
+                logger.error(
+                    "__fetch_states: timeout/error waiting for state from unum=%d (%s); preserving sync set and failing. batcher_unums=%s snapshot=%s",
                     unum, type(item).__name__, sorted(self._batcher.unums()), self.debug_snapshot(),
                 )
+                # Preserve the sync set and fail fast instead of silently shrinking it.
+                # self.unregister(unum)
+                failures.append((unum, item))
                 continue
 
             _, state = item
@@ -297,6 +338,14 @@ class GameServicer(pb2_grpc.GameServicer):
             logger.debug("__fetch_states: received state unum=%d cycle=%d", unum, cycle)
             self._states[unum] = state
             self._last_state_cycles[unum] = cycle
+
+        if failures:
+            failing_unum, failing_exc = failures[0]
+            exc = SyncSetRuntimeError(
+                f"Failed to fetch aligned state for unum={failing_unum}: {type(failing_exc).__name__}: {failing_exc}"
+            )
+            self._set_runtime_error(exc)
+            raise exc from failing_exc
 
         logger.debug("__fetch_states: done — returning states for unums=%s", sorted(self._states.keys()))
         return self._states.copy()
@@ -343,19 +392,29 @@ class GameServicer(pb2_grpc.GameServicer):
 
         ret = set()
         res = await asyncio.gather(*tasks, return_exceptions=True)
+        failures: list[tuple[int, Exception]] = []
         for unum, r in zip(actions.keys(), res):
-            if isinstance(r, RuntimeError):
-                logger.warning("__send_actions: failed to send action for unum=%d: %s", unum, r)
-            elif isinstance(r, Exception):
-                self.unregister(unum)
+            if isinstance(r, Exception):
                 logger.error(
-                    "__send_actions: error sending action for unum=%d, unregistered: %s snapshot=%s",
+                    "__send_actions: error sending action for unum=%d; preserving sync set and failing: %s snapshot=%s",
                     unum,
                     r,
                     self.debug_snapshot(),
                 )
+                # Preserve the sync set and fail fast instead of silently shrinking it.
+                # self.unregister(unum)
+                failures.append((unum, r))
+                continue
 
             ret.add(unum)
+
+        if failures:
+            failing_unum, failing_exc = failures[0]
+            exc = SyncSetRuntimeError(
+                f"Failed to send action for unum={failing_unum}: {type(failing_exc).__name__}: {failing_exc}"
+            )
+            self._set_runtime_error(exc)
+            raise exc from failing_exc
 
         logger.debug("__send_actions: done, sent to unums=%s", sorted(ret))
         return ret
@@ -366,14 +425,32 @@ class GameServicer(pb2_grpc.GameServicer):
 
     def __run_coro(self, coro: Any, timeout: float | None = None) -> Any:
         """Schedule *coro* on the bound event loop and block until it completes."""
+        try:
+            self._raise_if_runtime_error()
+        except Exception:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
+            raise
         loop = self._loop
         if loop is None:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
             raise RuntimeError(
                 "GameServicer has no bound event loop.  "
                 "Call serve() or bind_loop() first."
             )
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=timeout)
+        try:
+            result = future.result(timeout=timeout)
+        except Exception as exc:
+            if self._runtime_error is None:
+                self._set_runtime_error(exc)
+            self._raise_if_runtime_error()
+            raise
+        self._raise_if_runtime_error()
+        return result
 
     def fetch_states(
         self, timeout: float = STATE_GET_TIMEOUT_S
@@ -423,6 +500,7 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_state_cycles.clear()
         self._last_get_action_meta.clear()
         self._last_action_send_meta.clear()
+        self._runtime_error = None
         self._states_queues.clear()
         self._action_queues.clear()
 
@@ -447,6 +525,7 @@ class GameServicer(pb2_grpc.GameServicer):
             self._last_state_cycles.clear()
             self._last_get_action_meta.clear()
             self._last_action_send_meta.clear()
+            self._runtime_error = None
             self._states_queues.clear()
             self._action_queues.clear()
 

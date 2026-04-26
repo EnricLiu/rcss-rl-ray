@@ -10,10 +10,22 @@ from asyncio import Queue, Task
 import asyncio
 import logging
 
-QUEUE_SEND_TIMEOUT_S = 2.0
+QUEUE_SEND_TIMEOUT_S = 5.0
 RESET_TIMEOUT_S = 5.0
 
 logger = logging.getLogger(__name__)
+
+
+class BatchQueueError(RuntimeError):
+    """Base error raised for fatal batch queue runtime failures."""
+
+
+class BatchQueueNotRunningError(BatchQueueError):
+    """Raised when states arrive while the dispatch task is not running."""
+
+
+class BatchQueueDispatchError(BatchQueueError):
+    """Raised when a complete timestep batch cannot be dispatched."""
 
 
 class BatchQueue[StateTy]:
@@ -114,6 +126,18 @@ class BatchQueue[StateTy]:
             },
         }
 
+    def raise_if_failed(self) -> None:
+        """Raise the dispatch task failure, if the batcher is no longer healthy."""
+        if self.__task is None:
+            raise BatchQueueNotRunningError("BatchQueue dispatch task is not running")
+        if not self.__task.done():
+            return
+        if self.__task.cancelled():
+            raise BatchQueueNotRunningError("BatchQueue dispatch task was cancelled")
+        if (exc := self.__task.exception()) is not None:
+            raise exc
+        raise BatchQueueNotRunningError("BatchQueue dispatch task exited unexpectedly")
+
     async def __run(self):
         """Main dispatch loop: wait for updates or reset, then dispatch complete batches."""
         logger.debug("BatchQueue.__run: dispatch loop started, registered_unums=%s", sorted(self.__unums))
@@ -174,15 +198,21 @@ class BatchQueue[StateTy]:
                     res = await asyncio.gather(*tasks, return_exceptions=True)
                     for unum, r in zip(unums, res):
                         if r is not None:
-                            logger.warning(
-                                "BatchQueue.__run: timeout sending state for unum=%d at timestep=%d; unregistering",
+                            logger.error(
+                                "BatchQueue.__run: failed to send state for unum=%d at timestep=%d (%s); preserving sync set and raising",
                                 unum, timestep,
+                                type(r).__name__,
                             )
-                            self.unregister(unum)
+                            # Do not shrink the sync set during training by unregistering a failing unum here.
+                            # self.unregister(unum)
+                            raise BatchQueueDispatchError(
+                                f"BatchQueue failed to dispatch state for unum={unum} timestep={timestep}: {type(r).__name__}: {r}"
+                            )
                     break
 
         except Exception as e:
             logger.error("BatchQueue.__run: dispatch loop crashed: %s", e, exc_info=True)
+            raise
 
         logger.debug("BatchQueue.__run: dispatch loop exited")
 
@@ -215,6 +245,8 @@ class BatchQueue[StateTy]:
 
     async def put(self, unum: int, timestep: int, unum_state: StateTy):
         """Submit a state for a (unum, timestep) pair and notify the dispatch loop."""
+        self.raise_if_failed()
+
         if timestep <= self.__last_timestep:
             logger.debug(
                 "BatchQueue.put: unum=%d sent state for timestep=%d but last_dispatched=%d; ignoring",
@@ -240,11 +272,14 @@ class BatchQueue[StateTy]:
 
         # Warn if the dispatch task is not alive when a state arrives
         if self.__task is None or self.__task.done():
+            exc = BatchQueueNotRunningError(
+                f"BatchQueue dispatch task is not running while receiving unum={unum} timestep={timestep}"
+            )
             logger.error(
-                "BatchQueue.put: unum=%d timestep=%d — dispatch task is NOT running (task=%s)! "
-                "States will never be dispatched.",
+                "BatchQueue.put: unum=%d timestep=%d — dispatch task is NOT running (task=%s)! raising",
                 unum, timestep, self.__task,
             )
+            raise exc
 
         try:
             self.__update_event.put_nowait(True)
