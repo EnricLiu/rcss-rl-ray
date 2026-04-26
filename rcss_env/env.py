@@ -15,7 +15,7 @@ import numpy as np
 from gymnasium import spaces
 from ray.rllib.env import MultiAgentEnv
 
-from schema import GameServerSchema, TeamSide
+from schema import GameServerSchema, TeamSide, TeamSchema
 from client.room import RoomClient
 from client.base.allocator import AllocatorClient
 from train.curriculum import CurriculumMixin
@@ -50,9 +50,6 @@ class RCSSEnv(MultiAgentEnv):
 
         self.__schema = self.config.curriculum.make_schema()
         self.__reward_fn = self.config.curriculum.reward_fn()
-
-        self.agent_team = self.schema.teams.agent_team
-        self.agent_team_unums = set([agent.unum for agent in self.agent_team.ssp_agents()])
 
         # All agents share the same observation / action spaces
         _act_space = Action.space_schema()
@@ -107,6 +104,14 @@ class RCSSEnv(MultiAgentEnv):
     @property
     def config(self) -> EnvConfig:
         return self.__cfg
+
+    @property
+    def agent_team(self) -> TeamSchema:
+        return self.schema.teams.agent_team
+
+    @property
+    def agent_team_unums(self) -> set[int]:
+        return set([agent.unum for agent in self.agent_team.ssp_agents()])
 
     @property
     def bhv(self) -> NeckViewBhv:
