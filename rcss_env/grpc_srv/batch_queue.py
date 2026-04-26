@@ -200,11 +200,16 @@ class BatchQueue[StateTy]:
         """Callback invoked when the dispatch task exits for any reason."""
         if task.cancelled():
             logger.debug("BatchQueue: dispatch task was cancelled")
-        elif task.exception() is not None:
-            logger.error(
-                "BatchQueue: dispatch task exited with exception: %s",
-                task.exception(), exc_info=task.exception(),
-            )
+            return
+
+        if (exc := task.exception()) is not None:
+            try: raise exc
+            except Exception:
+                logger.error(
+                    "BatchQueue: dispatch task exited with exception: %s",
+                    exc,
+                    exc_info=True,
+                )
         else:
             logger.debug("BatchQueue: dispatch task finished normally")
 
