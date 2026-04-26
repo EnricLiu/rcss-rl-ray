@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from train.factory import build_env_config
 from train.train import (
+    DEFAULT_POLICY_ID,
     ENV_NAME,
     build_ppo_config,
     build_run_config,
     build_train_config,
+    default_policy_mapping_fn,
     build_tune_callbacks,
     build_tune_config,
     parse_args,
@@ -115,6 +117,9 @@ def test_build_ppo_config_uses_new_api_stack() -> None:
     assert ppo_config.disable_env_checking is True
     assert ppo_config.enable_rl_module_and_learner is True
     assert ppo_config.enable_env_runner_and_connector_v2 is True
+    assert ppo_config.is_multi_agent is True
+    assert DEFAULT_POLICY_ID in ppo_config.policies
+    assert default_policy_mapping_fn(agent_id=1, episode=None) == DEFAULT_POLICY_ID
 
     from train.models.fcnet import RCSSPPORLModule
     from ray.rllib.core.rl_module.rl_module import RLModuleSpec

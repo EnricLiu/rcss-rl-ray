@@ -31,7 +31,10 @@ from train.models.fcnet import RCSSPPORLModule
 logger = logging.getLogger(__name__)
 
 ENV_NAME = "rcss_multi_agent"
-DEFAULT_POLICY_ID = "default_policy"
+# RLlib reserves its own "default_policy" ID for single-agent setups.  A
+# one-policy multi-agent setup must use a non-reserved ID, otherwise PPO builds
+# a SingleAgentEnvRunner and fails when it receives RCSSEnv (MultiAgentEnv).
+DEFAULT_POLICY_ID = "rcss_policy"
 
 
 def default_policy_mapping_fn(
