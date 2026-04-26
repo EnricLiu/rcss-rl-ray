@@ -32,6 +32,7 @@ from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.framework import try_import_torch
 from ray.rllib.utils.torch_utils import FLOAT_MIN
+from ray.rllib.utils.typing import TensorType
 
 torch, _ = try_import_torch()
 
@@ -83,7 +84,7 @@ class RCSSPPORLModule(DefaultPPOTorchRLModule):
 
     def _extract_mask_and_strip_obs(
         self, batch: Dict[str, Any]
-    ) -> tuple[Any, Dict[str, Any]]:
+    ) -> tuple[TensorType, Dict[str, Any]]:
         """Pop the action mask from ``batch[OBS]`` and replace with raw obs.
 
         Returns ``(action_mask, modified_batch)`` where *modified_batch* is a
@@ -95,7 +96,7 @@ class RCSSPPORLModule(DefaultPPOTorchRLModule):
         return action_mask, batch
 
     def _apply_mask(
-        self, out: Dict[str, Any], action_mask: Any
+        self, out: Dict[str, Any], action_mask: TensorType
     ) -> Dict[str, Any]:
         """Add ``-inf`` to logits of disallowed discrete actions.
 
