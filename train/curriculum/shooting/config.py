@@ -7,7 +7,7 @@ from ..utils import Region
 
 
 class ShootingCurriculumConfig(BaseModel):
-    debug: bool = True
+    debug: bool = False
     agent_unum: int = Field(ge=1, le=11)
     team_side: Literal["left", "right", "rand"] = "left"
 
