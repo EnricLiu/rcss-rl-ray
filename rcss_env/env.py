@@ -50,7 +50,7 @@ class RCSSEnv(MultiAgentEnv):
     def __init__(self, config: EnvConfig) -> None:
         self.__cfg = config
 
-        self.__schema = self.config.curriculum.make_schema()
+        self.__schema = self.gen_schema()
         self.__reward_fn = self.config.curriculum.reward_fn()
 
         # All agents share the same observation / action spaces
@@ -166,6 +166,11 @@ class RCSSEnv(MultiAgentEnv):
             "servicer": self.__get_servicer().debug_snapshot(),
         }
 
+    def gen_schema(self) -> GameServerSchema:
+        self.__schema = self.curriculum.make_schema()
+        self.__inject_agent_grpc_config()
+        return self.schema
+
     def _setup(self) -> None:
         """Initialize the allocator client and gRPC servicer, and register all agent unums."""
         self.__allocator = AllocatorClient(self.config.allocator)
@@ -198,7 +203,7 @@ class RCSSEnv(MultiAgentEnv):
         super().reset(seed=seed, options=options)
 
         # 0. make rand schema, set the reward fn
-        self.__schema = self.curriculum.make_schema()
+        self.__schema = self.gen_schema()
         self.__reward_fn = self.curriculum.reward_fn()
 
         # Clear episode-local caches up-front so a failed reset cannot leak the
@@ -375,9 +380,13 @@ class RCSSEnv(MultiAgentEnv):
         _host = IPvAnyAddress(host)
         self.config.grpc.host = _host
         self.config.grpc.port = port
+
+        self.__inject_agent_grpc_config()
+
+    def __inject_agent_grpc_config(self):
         for player in self.agent_team.ssp_agents():
-            player.policy.grpc_host = _host
-            player.policy.grpc_port = port
+            player.policy.grpc_host = self.config.grpc.host
+            player.policy.grpc_port = self.config.grpc.port
 
     # ------------------------------------------------------------------
     # State / observation helpers
