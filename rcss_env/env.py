@@ -372,9 +372,11 @@ class RCSSEnv(MultiAgentEnv):
 
     def __sync_room_grpc_server(self, host: str, port: int) -> None:
         """Mirror the bound gRPC port into every SSP agent policy in the room schema."""
-        self.config.grpc.host = IPvAnyAddress(host)
+        _host = IPvAnyAddress(host)
+        self.config.grpc.host = _host
         self.config.grpc.port = port
         for player in self.agent_team.ssp_agents():
+            player.policy.grpc_host = _host
             player.policy.grpc_port = port
 
     # ------------------------------------------------------------------
