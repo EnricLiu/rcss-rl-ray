@@ -180,7 +180,7 @@ def _csv_tuple(value: str | None) -> tuple[str, ...] | None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    defaults = TrainConfig()
+    defaults = TrainConfig(timestamp_experiment_name=False)
     parser = argparse.ArgumentParser(
         description="Train PPO on RCSSEnv through Ray Tune and a selected curriculum."
     )
@@ -190,6 +190,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--experiment-name", type=str, default=defaults.experiment_name)
     parser.add_argument("--storage-path", type=str, default=defaults.storage_path)
     parser.add_argument("--restore", dest="restore_path", type=str, default=defaults.restore_path)
+    parser.add_argument("--timestamp-experiment-name", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--num-samples", type=int, default=defaults.num_samples)
     parser.add_argument("--metric", type=str, default=defaults.metric)
     parser.add_argument("--mode", choices=["min", "max"], default=defaults.mode)
@@ -236,7 +237,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Aim
     parser.add_argument("--disable-aim", dest="enable_aim", action="store_false", default=defaults.enable_aim)
     parser.add_argument("--aim-repo", type=str, default=defaults.aim_repo)
-    parser.add_argument("--aim-experiment-name", type=str, default=defaults.aim_experiment_name)
+    parser.add_argument("--aim-experiment-name", type=str, default=None)
     parser.add_argument("--aim-metrics", type=str, default=None, help="Comma-separated Tune metric names to log to Aim.")
 
     parser.add_argument(
@@ -255,6 +256,7 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         experiment_name=args.experiment_name,
         storage_path=args.storage_path,
         restore_path=args.restore_path,
+        timestamp_experiment_name=args.timestamp_experiment_name,
         num_samples=args.num_samples,
         metric=args.metric,
         mode=args.mode,

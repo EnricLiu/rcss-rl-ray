@@ -19,6 +19,7 @@ class TrainConfig:
     storage_root: str = "/mnt/ray/storage"
     storage_path: str | None = None
     restore_path: str | None = None
+    timestamp_experiment_name: bool = True
     num_samples: int = Field(default=1, ge=1)
     metric: str = "env_runners/episode_reward_mean"
     mode: Literal["min", "max"] = "max"
@@ -65,14 +66,16 @@ class TrainConfig:
     # Aim/Tune logging
     enable_aim: bool = True
     aim_repo: str = "/mnt/aim"
-    aim_experiment_name: str = "rcss-shooting"
+    aim_experiment_name: str | None = None
     aim_metrics: tuple[str, ...] | None = None
 
     def __post_init__(self):
-        time_suffix = datetime.now(tz=TIMEZONE).strftime('%Y%m%d_%H%M%S')
-        self.experiment_name = f"{self.experiment_name}-{time_suffix}"
-        if self.enable_aim:
-            self.aim_experiment_name = f"{self.experiment_name}-{time_suffix}"
+        if self.timestamp_experiment_name:
+            time_suffix = datetime.now(tz=TIMEZONE).strftime("%Y%m%d_%H%M%S")
+            self.experiment_name = f"{self.experiment_name}-{time_suffix}"
+
+        if self.enable_aim and self.aim_experiment_name is None:
+            self.aim_experiment_name = self.experiment_name
 
         if self.storage_path is None:
-            self.storage_path = f"{self.storage_root}/{self.experiment_name}"
+            self.storage_path = self.storage_root
