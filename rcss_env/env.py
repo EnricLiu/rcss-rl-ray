@@ -55,14 +55,16 @@ class RCSSEnv(MultiAgentEnv):
 
         # All agents share the same observation / action spaces
         _act_space = Action.space_schema()
-
-        _obs_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
-        )
         _obs_space = spaces.Dict({
-            "obs": spaces.Box(low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32),
+            "obs": spaces.Box(
+                low=np.full((self.obs_dim,), -np.inf, dtype=np.float32),
+                high=np.full((self.obs_dim,), np.inf, dtype=np.float32),
+                dtype=np.float32,
+            ),
             ActionMaskResolver.OBSERVATION_KEY: spaces.Box(
-                low=0, high=1, shape=(Action.n_actions(),), dtype=np.int8
+                low=np.zeros((Action.n_actions(),), dtype=np.int8),
+                high=np.ones((Action.n_actions(),), dtype=np.int8),
+                dtype=np.int8,
             ),
         })
 
@@ -464,20 +466,45 @@ class RCSSEnv(MultiAgentEnv):
         for unum in sorted(missing_unums):
             servicer.register(unum)
 
+    def __coerce_obs_vector(self, unum: int, wm: pb2.WorldModel) -> np.ndarray:
+        obs = np.asarray(observation.extract(wm), dtype=np.float32)
+        if obs.shape != (self.obs_dim,):
+            raise ValueError(
+                f"Observation shape mismatch for unum={unum}: expected={(self.obs_dim,)}, got={obs.shape}"
+            )
+        if not np.isfinite(obs).all():
+            logger.warning(
+                "Observation for unum=%d contains non-finite values; replacing them with finite float32 defaults",
+                unum,
+            )
+            obs = np.nan_to_num(obs, copy=False)
+        return obs
+
+    def __coerce_action_mask(self, unum: int) -> np.ndarray:
+        mask = np.asarray(self.__action_mask(unum))
+        if mask.shape != (Action.n_actions(),):
+            raise ValueError(
+                f"Action mask shape mismatch for unum={unum}: expected={(Action.n_actions(),)}, got={mask.shape}"
+            )
+        if not np.issubdtype(mask.dtype, np.integer):
+            mask = np.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0)
+        coerced = np.where(mask > 0, 1, 0).astype(np.int8, copy=False)
+        return coerced
+
     def __states_to_obs(self, states: dict[int, pb2.State]) -> dict[int, dict[str, np.ndarray]]:
         """Convert states into masked observation payloads for each agent."""
         obs: dict[int, dict[str, np.ndarray]] = {}
         for unum, state in states.items():
             obs[unum] = {
-                "obs": observation.extract(state.world_model).astype(np.float32),
-                ActionMaskResolver.OBSERVATION_KEY: self.__action_mask(unum),
+                "obs": self.__coerce_obs_vector(unum, state.world_model),
+                ActionMaskResolver.OBSERVATION_KEY: self.__coerce_action_mask(unum),
             }
         return obs
 
     def __zero_obs(self) -> dict[str, np.ndarray]:
         return {
             "obs": np.zeros((self.obs_dim,), dtype=np.float32),
-            ActionMaskResolver.OBSERVATION_KEY: Action.full_action_mask(),
+            ActionMaskResolver.OBSERVATION_KEY: Action.full_action_mask().copy(),
         }
 
     def __terminal_obs(self) -> dict[int, dict[str, np.ndarray]]:
