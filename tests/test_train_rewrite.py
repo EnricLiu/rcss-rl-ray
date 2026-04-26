@@ -104,7 +104,7 @@ def test_build_env_config_uses_shooting_curriculum() -> None:
     assert len(opponent_team.players) == 2
 
 
-def test_build_ppo_config_keeps_registered_env_and_legacy_model_stack() -> None:
+def test_build_ppo_config_uses_new_api_stack() -> None:
     cfg = build_train_config(parse_args(["--ray-address", "local", "--disable-aim"]))
     env_cfg = build_env_config(cfg)
 
@@ -113,9 +113,15 @@ def test_build_ppo_config_keeps_registered_env_and_legacy_model_stack() -> None:
     assert ppo_config.env == ENV_NAME
     assert ppo_config.env_config == {"env_config": env_cfg}
     assert ppo_config.disable_env_checking is True
-    assert ppo_config.enable_rl_module_and_learner is False
-    assert ppo_config.enable_env_runner_and_connector_v2 is False
-    assert ppo_config.model["custom_model"] == "rcss_fcnet"
+    assert ppo_config.enable_rl_module_and_learner is True
+    assert ppo_config.enable_env_runner_and_connector_v2 is True
+
+    from train.models.fcnet import RCSSPPORLModule
+    from ray.rllib.core.rl_module.rl_module import RLModuleSpec
+
+    spec = ppo_config.rl_module_spec
+    assert isinstance(spec, RLModuleSpec)
+    assert spec.module_class is RCSSPPORLModule
 
 
 def test_build_tune_config_and_run_config_without_aim() -> None:

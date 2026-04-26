@@ -3,6 +3,15 @@
 Multi-agent reinforcement learning for **RoboCup Soccer Simulation** (RCSS)
 built on top of [Ray](https://ray.io/) and [RLlib](https://docs.ray.io/en/latest/rllib/).
 
+> **New API stack**: This project has been migrated to the RLlib
+> **new API stack** (`RLModule` / `Learner` / `EnvRunner` / `ConnectorV2`).
+> The old-stack flags `enable_rl_module_and_learner=False` and
+> `enable_env_runner_and_connector_v2=False` have been removed.
+> Custom action masking is now implemented via `RCSSPPORLModule`
+> (a `DefaultPPOTorchRLModule` subclass in `train/models/fcnet.py`)
+> and custom per-episode metrics are logged through `MetricsLogger`
+> inside `RCSSCallbacks`.
+
 ## Architecture
 
 ```mermaid

@@ -1,3 +1,3 @@
-from .fcnet import RCSSFCNet
+from .fcnet import RCSSPPORLModule
 
-__all__ = ["RCSSFCNet"]
+__all__ = ["RCSSPPORLModule"]

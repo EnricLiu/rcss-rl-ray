@@ -1,110 +1,160 @@
+"""RCSS PPO RLModule with action masking (new API stack).
+
+Migrated from the old ``TorchModelV2`` / ``ModelCatalog`` approach to the
+RLlib new API stack (``RLModule`` / ``Learner`` / ``EnvRunner`` /
+``ConnectorV2``).
+
+The module expects a ``gymnasium.spaces.Dict`` observation space of the form::
+
+    Dict({
+        "obs":         Box(shape=(obs_dim,), dtype=float32),
+        "action_mask": Box(low=0, high=1, shape=(n_discrete_actions,), dtype=int8),
+    })
+
+Action masking is applied to the *discrete* slice of ``ACTION_DIST_INPUTS``
+so that logits for forbidden actions are set to ``-inf`` before sampling.
+Continuous action parameters (the ``params`` part of the Dict action space)
+are left unmasked.
+"""
+
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Dict, Optional, Union
 
-import numpy as np
-import torch
-import torch.nn as nn
-from gymnasium import spaces
-from gymnasium.spaces import Discrete
-from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
-from ray.rllib.models import ModelCatalog
+import gymnasium as gym
+
+from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import (
+    DefaultPPOTorchRLModule,
+)
+from ray.rllib.core.columns import Columns
+from ray.rllib.core.rl_module.apis.value_function_api import ValueFunctionAPI
+from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
 from ray.rllib.utils.annotations import override
-from ray.rllib.utils.typing import TensorType, ModelConfigDict
-from rcss_env.action_mask import ActionMaskResolver
+from ray.rllib.utils.framework import try_import_torch
+from ray.rllib.utils.torch_utils import FLOAT_MIN
 
-class RCSSFCNet(TorchModelV2, nn.Module):
+torch, _ = try_import_torch()
 
-    _MASK_LOGIT_MIN = -1.0e9
+# Keys in the environment's Dict observation space
+_OBS_KEY = "obs"
+_MASK_KEY = "action_mask"
 
-    def __init__(
-        self,
-        obs_space: Any,
-        action_space: Any,
-        num_outputs: int,
-        model_config: ModelConfigDict,
-        name: str,
-    ) -> None:
-        TorchModelV2.__init__(
-            self, obs_space, action_space, num_outputs, model_config, name
-        )
-        nn.Module.__init__(self)
 
-        hidden_sizes: list[int] = model_config.get(
-            "custom_model_config", {}
-        ).get("hidden_sizes", [256, 256])
+class RCSSPPORLModule(DefaultPPOTorchRLModule):
+    """PPO RLModule for RCSS that applies action masking on the discrete head.
 
-        original_obs_space = getattr(obs_space, "original_space", obs_space)
-        if isinstance(original_obs_space, spaces.Dict) and "obs" in original_obs_space.spaces:
-            feature_obs_space = original_obs_space["obs"]
+    The encoder receives only the ``"obs"`` sub-space (shape ``(obs_dim,)``),
+    while the full Dict observation space (including ``"action_mask"``) is
+    reported to callers via ``self.observation_space``.
+
+    During each forward pass the ``"action_mask"`` tensor is extracted from
+    the batch and used to clamp the discrete action logits to ``FLOAT_MIN``
+    for disallowed actions.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Intercept the observation_space so the encoder is built only on the
+        # "obs" sub-space, not on the full Dict that includes the mask.
+        obs_space: Optional[gym.Space] = kwargs.get("observation_space")
+        if (
+            obs_space is not None
+            and isinstance(obs_space, gym.spaces.Dict)
+            and _OBS_KEY in obs_space.spaces
+        ):
+            self._obs_space_with_mask = obs_space
+            kwargs["observation_space"] = obs_space[_OBS_KEY]
         else:
-            feature_obs_space = original_obs_space
+            self._obs_space_with_mask = obs_space
 
-        obs_dim = int(np.prod(feature_obs_space.shape))
+        super().__init__(*args, **kwargs)
 
-        original_action_space = getattr(action_space, "original_space", action_space)
-        self._discrete_action_dim = 0
-        if isinstance(original_action_space, spaces.Dict) and "actions" in original_action_space.spaces:
-            discrete_action_space = original_action_space["actions"]
-            if isinstance(discrete_action_space, Discrete):
-                self._discrete_action_dim = int(discrete_action_space.n)
+    @override(DefaultPPOTorchRLModule)
+    def setup(self) -> None:
+        super().setup()
+        # After the encoder/pi/vf heads are built (which use the stripped obs
+        # space), restore the full observation space so that this module
+        # correctly reports the env's actual space.
+        if self._obs_space_with_mask is not None:
+            self.observation_space = self._obs_space_with_mask
 
-        layers: list[nn.Module] = []
-        in_size = obs_dim
-        for h in hidden_sizes:
-            layers += [nn.Linear(in_size, h), nn.ReLU()]
-            in_size = h
-        self._trunk = nn.Sequential(*layers)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-        self._policy_head = nn.Linear(in_size, num_outputs)
+    def _extract_mask_and_strip_obs(
+        self, batch: Dict[str, Any]
+    ) -> tuple[Any, Dict[str, Any]]:
+        """Pop the action mask from ``batch[OBS]`` and replace with raw obs.
 
-        self._value_head = nn.Linear(in_size, 1)
+        Returns ``(action_mask, modified_batch)`` where *modified_batch* is a
+        shallow copy with ``Columns.OBS`` replaced by the ``"obs"`` tensor.
+        """
+        obs_dict = batch[Columns.OBS]
+        action_mask = obs_dict[_MASK_KEY].float()
+        batch = {**batch, Columns.OBS: obs_dict[_OBS_KEY]}
+        return action_mask, batch
 
-        self._last_value: torch.Tensor | None = None
+    def _apply_mask(
+        self, out: Dict[str, Any], action_mask: Any
+    ) -> Dict[str, Any]:
+        """Add ``-inf`` to logits of disallowed discrete actions.
 
-    @override(TorchModelV2)
-    def forward(
-        self,
-        input_dict: dict[str, TensorType],
-        state: list[TensorType],
-        seq_lens: TensorType,
-    ) -> tuple[TensorType, list[TensorType]]:
-
-        obs_payload = input_dict.get("obs")
-        action_mask = None
-
-        if isinstance(obs_payload, dict) and "obs" in obs_payload:
-            obs = obs_payload["obs"].float()
-            action_mask = obs_payload.get(ActionMaskResolver.OBSERVATION_KEY)
+        Only the first ``n`` elements of ``ACTION_DIST_INPUTS`` are masked,
+        where ``n = action_mask.shape[-1]`` (i.e. the number of discrete
+        actions).  Continuous parameter logits that follow are left intact.
+        """
+        dist_inputs = out[Columns.ACTION_DIST_INPUTS]
+        n = action_mask.shape[-1]
+        inf_mask = torch.clamp(torch.log(action_mask), min=FLOAT_MIN)
+        masked_discrete = dist_inputs[..., :n] + inf_mask
+        if dist_inputs.shape[-1] > n:
+            out[Columns.ACTION_DIST_INPUTS] = torch.cat(
+                [masked_discrete, dist_inputs[..., n:]], dim=-1
+            )
         else:
-            obs = input_dict["obs_flat"].float()
+            out[Columns.ACTION_DIST_INPUTS] = masked_discrete
+        return out
 
-        trunk_out = self._trunk(obs)
-        self._last_value = self._value_head(trunk_out).squeeze(1)
+    # ------------------------------------------------------------------
+    # Forward passes
+    # ------------------------------------------------------------------
 
-        logits = self._policy_head(trunk_out)
-        if action_mask is not None and self._discrete_action_dim > 0:
-            mask = action_mask.float().clamp(0.0, 1.0)
-            if mask.shape[-1] == self._discrete_action_dim and logits.shape[-1] >= self._discrete_action_dim:
-                discrete_logits = logits[..., :self._discrete_action_dim]
-                inf_mask = torch.where(
-                    mask > 0,
-                    torch.zeros_like(mask),
-                    torch.full_like(mask, self._MASK_LOGIT_MIN),
-                )
-                logits = torch.cat(
-                    [discrete_logits + inf_mask, logits[..., self._discrete_action_dim:]],
-                    dim=-1,
-                )
+    @override(DefaultPPOTorchRLModule)
+    def _forward(self, batch: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+        """Inference / exploration forward pass with action masking."""
+        action_mask, batch = self._extract_mask_and_strip_obs(batch)
+        out = super()._forward(batch, **kwargs)
+        return self._apply_mask(out, action_mask)
 
-        return logits, state
+    @override(DefaultPPOTorchRLModule)
+    def _forward_train(
+        self, batch: Dict[str, Any], **kwargs: Any
+    ) -> Dict[str, Any]:
+        """Training forward pass with action masking.
 
-    @override(TorchModelV2)
-    def value_function(self) -> TensorType:
+        The action mask is always expected to be present in ``batch[Columns.OBS]``
+        when this is called from the PPO Learner with the raw training batch.
+        The defensive ``isinstance`` check handles the edge case where the batch
+        has already had its obs stripped (e.g. by ``compute_values``).
+        """
+        obs = batch.get(Columns.OBS)
+        if isinstance(obs, dict) and _MASK_KEY in obs:
+            action_mask, batch = self._extract_mask_and_strip_obs(batch)
+        else:
+            action_mask = None
+        out = super()._forward_train(batch, **kwargs)
+        if action_mask is not None:
+            return self._apply_mask(out, action_mask)
+        return out
 
-        assert self._last_value is not None, "forward() must be called first"
-        return self._last_value
-
-def register() -> None:
-
-    ModelCatalog.register_custom_model("rcss_fcnet", RCSSFCNet)
+    @override(ValueFunctionAPI)
+    def compute_values(
+        self,
+        batch: Dict[str, Any],
+        embeddings: Optional[Any] = None,
+    ) -> Any:
+        """Value function computation; strips action mask if still present."""
+        obs = batch.get(Columns.OBS)
+        if isinstance(obs, dict) and _MASK_KEY in obs:
+            _, batch = self._extract_mask_and_strip_obs(batch)
+        return super().compute_values(batch, embeddings)

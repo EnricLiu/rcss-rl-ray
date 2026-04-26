@@ -1,4 +1,11 @@
-"""Ray Tune training entry point for curriculum-based RCSS RL experiments."""
+"""Ray Tune training entry point for curriculum-based RCSS RL experiments.
+
+This module has been migrated to the RLlib **new API stack**
+(``RLModule`` / ``Learner`` / ``EnvRunner`` / ``ConnectorV2``).
+The previous old-stack configuration (``enable_rl_module_and_learner=False``,
+``enable_env_runner_and_connector_v2=False``, ``TorchModelV2`` / ``ModelCatalog``)
+has been replaced by the new-stack equivalents.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +16,17 @@ from typing import Any
 import ray
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.core.rl_module.rl_module import RLModuleSpec
+from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
 from ray.tune.registry import register_env
 
-from rcss_env.action_mask import ActionMaskResolver
 from rcss_env.config import EnvConfig
 from rcss_env.env import RCSSEnv
 
 from train.callbacks import RCSSCallbacks
 from train.config import TrainConfig
 from train.factory import build_env_config
-from train.models.fcnet import register as register_model
+from train.models.fcnet import RCSSPPORLModule
 
 logger = logging.getLogger(__name__)
 
@@ -39,25 +47,32 @@ def build_ppo_config(
     train_cfg: TrainConfig,
     env_config: EnvConfig,
 ) -> PPOConfig:
-    """Build a PPO AlgorithmConfig suitable for Ray Tune."""
+    """Build a PPO AlgorithmConfig suitable for Ray Tune (new API stack)."""
 
     def _env_creator(cfg: dict[str, Any]) -> RCSSEnv:
         return RCSSEnv(config=cfg["env_config"])
 
     register_env(ENV_NAME, _env_creator)
-    register_model()
 
     config = (
         PPOConfig()
         .api_stack(
-            enable_rl_module_and_learner=False,
-            enable_env_runner_and_connector_v2=False,
+            enable_rl_module_and_learner=True,
+            enable_env_runner_and_connector_v2=True,
         )
         .environment(
             env=ENV_NAME,
             env_config={"env_config": env_config},
-            action_mask_key=ActionMaskResolver.OBSERVATION_KEY,
             disable_env_checking=True,
+        )
+        .rl_module(
+            rl_module_spec=RLModuleSpec(
+                module_class=RCSSPPORLModule,
+                model_config=DefaultModelConfig(
+                    fcnet_hiddens=[256, 256],
+                    fcnet_activation="relu",
+                ),
+            )
         )
         .env_runners(
             num_env_runners=train_cfg.num_env_runners,
@@ -74,12 +89,6 @@ def build_ppo_config(
             gamma=train_cfg.gamma,
             entropy_coeff=train_cfg.entropy_coeff,
             clip_param=train_cfg.clip_param,
-            model={
-                "custom_model": "rcss_fcnet",
-                "custom_model_config": {
-                    "hidden_sizes": [256, 256],
-                },
-            },
         )
         .callbacks(RCSSCallbacks)
         .framework("torch")
