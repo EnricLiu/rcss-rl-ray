@@ -175,8 +175,10 @@ class ShootingReward(RewardFnMixin):
         # full world model (env passes `state.full_world_model`).
         prev_kickable = bool(prev_wm.self.is_kickable)
         curr_kickable = bool(curr_wm.self.is_kickable)
-        if curr_kickable and not prev_kickable:
-            bd.kickable_bonus = cfg.reward_kickable_bonus
+        if curr_kickable:
+            bd.kickable_bonus += cfg.reward_kickable_bonus
+            if not prev_kickable:
+                bd.kickable_bonus += cfg.reward_kickable_bonus
 
         # -- Cycle gap (used by shaping & time decay) -------------------------
         raw_gap = curr_wm.cycle - prev_wm.cycle
