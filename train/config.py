@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Literal
 
-from ray.util import get_node_ip_address
 from pydantic import Field
 from pydantic.dataclasses import dataclass
 
@@ -42,7 +41,7 @@ class TrainConfig:
     checkpoint_at_end: bool = True
 
     # Infrastructure
-    grpc_host: str = get_node_ip_address()
+    grpc_host: str = "0.0.0.0"
     grpc_port: int = Field(default=0, ge=0, le=65535)
     allocator_host: str = "rcss-env-allocator.rcss-gateway-dev.svc.cluster.local"
     allocator_port: int = Field(default=80, ge=1, le=65535)

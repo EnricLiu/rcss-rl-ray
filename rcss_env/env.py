@@ -12,7 +12,9 @@ from typing import Any
 
 import gymnasium
 import numpy as np
+from pydantic import IPvAnyAddress
 from gymnasium import spaces
+from ray.util import get_node_ip_address
 from ray.rllib.env import MultiAgentEnv
 
 from schema import GameServerSchema, TeamSide, TeamSchema
@@ -336,7 +338,8 @@ class RCSSEnv(MultiAgentEnv):
             block=False,
         )
 
-        self.__sync_room_grpc_port(actual_port)
+        actual_host = get_node_ip_address()
+        self.__sync_room_grpc_server(actual_host, actual_port)
 
     def _stop_grpc_server(self) -> None:
         """Gracefully stop the gRPC server and its event loop."""
@@ -367,8 +370,9 @@ class RCSSEnv(MultiAgentEnv):
                 logger.warning("Failed to release room %s: %s", self.room.info.name, exc)
             self.__room = None
 
-    def __sync_room_grpc_port(self, port: int) -> None:
+    def __sync_room_grpc_server(self, host: str, port: int) -> None:
         """Mirror the bound gRPC port into every SSP agent policy in the room schema."""
+        self.config.grpc.host = IPvAnyAddress(host)
         self.config.grpc.port = port
         for player in self.agent_team.ssp_agents():
             player.policy.grpc_port = port
