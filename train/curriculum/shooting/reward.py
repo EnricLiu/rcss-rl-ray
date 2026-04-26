@@ -138,17 +138,17 @@ class ShootingReward(RewardFnMixin):
     def compute(
         self,
         prev_obs: pb2.WorldModel | None,
-        prev_truth: pb2.WorldModel | None,
+        _prev_truth: pb2.WorldModel | None,
         curr_obs: pb2.WorldModel,
-        curr_truth: pb2.WorldModel,
+        _curr_truth: pb2.WorldModel,
     ) -> float:
         # Use full-information world models whenever possible.
-        prev_wm = prev_truth if prev_truth is not None else prev_obs
+        prev_wm = prev_obs
         if prev_wm is None:
             self.last_breakdown = RewardBreakdown()
             self.reset_reward_breakdown()
             return 0.0
-        curr_wm = curr_truth
+        curr_wm = curr_obs
 
         cfg = self.config
         bd = RewardBreakdown()
