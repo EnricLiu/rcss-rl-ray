@@ -233,6 +233,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--time-up", type=int, default=defaults.time_up)
     parser.add_argument("--goal-l", type=_optional_int, default=defaults.goal_l)
     parser.add_argument("--goal-r", type=_optional_int, default=defaults.goal_r)
+    parser.add_argument("--reward-goal", type=float, default=defaults.reward_goal)
+    parser.add_argument("--reward-concede", type=float, default=defaults.reward_concede)
+    parser.add_argument("--reward-out-of-bounds", type=float, default=defaults.reward_out_of_bounds)
+    parser.add_argument("--reward-ball-to-goal-shaping", type=float, default=defaults.reward_ball_to_goal_shaping)
+    parser.add_argument("--reward-time-decay", type=float, default=defaults.reward_time_decay)
 
     # Aim
     parser.add_argument("--disable-aim", dest="enable_aim", action="store_false", default=defaults.enable_aim)
@@ -293,6 +298,11 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         time_up=args.time_up,
         goal_l=args.goal_l,
         goal_r=args.goal_r,
+        reward_goal=args.reward_goal,
+        reward_concede=args.reward_concede,
+        reward_out_of_bounds=args.reward_out_of_bounds,
+        reward_ball_to_goal_shaping=args.reward_ball_to_goal_shaping,
+        reward_time_decay=args.reward_time_decay,
         enable_aim=args.enable_aim,
         aim_repo=args.aim_repo,
         aim_experiment_name=args.aim_experiment_name,

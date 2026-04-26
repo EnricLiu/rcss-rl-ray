@@ -31,6 +31,12 @@ class ShootingCurriculumConfig(BaseModel):
     player_agent_image: str = "Cyrus2D/SoccerSimulationProxy"
     player_bot_image: str = "HELIOS/helios-base"
 
+    reward_goal: float = Field(default=10.0, ge=0.0)
+    reward_concede: float = Field(default=10.0, ge=0.0)
+    reward_out_of_bounds: float = Field(default=1.0, ge=0.0)
+    reward_ball_to_goal_shaping: float = Field(default=1.0, ge=0.0)
+    reward_time_decay: float = Field(default=0.001, ge=0.0)
+
     def model_post_init(self, context: Any, /) -> None:
         if self.agent_unum > self.our_player_num:
             raise ValueError(

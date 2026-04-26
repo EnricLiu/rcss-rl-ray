@@ -62,6 +62,11 @@ class TrainConfig:
     time_up: int = Field(default=5000, ge=0, le=65535)
     goal_l: int | None = Field(default=1, ge=0, le=255)
     goal_r: int | None = Field(default=1, ge=0, le=255)
+    reward_goal: float = Field(default=10.0, ge=0.0)
+    reward_concede: float = Field(default=10.0, ge=0.0)
+    reward_out_of_bounds: float = Field(default=1.0, ge=0.0)
+    reward_ball_to_goal_shaping: float = Field(default=1.0, ge=0.0)
+    reward_time_decay: float = Field(default=0.001, ge=0.0)
 
     # Aim/Tune logging
     enable_aim: bool = True

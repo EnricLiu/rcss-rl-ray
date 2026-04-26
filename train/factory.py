@@ -36,6 +36,11 @@ def build_shooting_curriculum_config(train_cfg: TrainConfig) -> ShootingCurricul
         oppo_team_name=train_cfg.oppo_team_name,
         player_agent_image=train_cfg.player_agent_image,
         player_bot_image=train_cfg.player_bot_image,
+        reward_goal=train_cfg.reward_goal,
+        reward_concede=train_cfg.reward_concede,
+        reward_out_of_bounds=train_cfg.reward_out_of_bounds,
+        reward_ball_to_goal_shaping=train_cfg.reward_ball_to_goal_shaping,
+        reward_time_decay=train_cfg.reward_time_decay,
     )
 
 
