@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Generator
+from typing import Any, Generator, Optional
 
 from pydantic import ConfigDict, field_validator, model_validator
 
 from ._base import SchemaModel
+from .coach import CoachSchema
 from .player import PlayerSchema
 from .policy import BotPolicy, PolicyKind, SspAgentPolicy
 
@@ -30,6 +31,7 @@ class TeamSchema(SchemaModel):
     name: str
     side: TeamSide
     players: list[PlayerSchema]
+    coach: Optional[CoachSchema] = None
 
     @field_validator("name")
     @classmethod

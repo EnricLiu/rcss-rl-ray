@@ -411,6 +411,10 @@ class RCSSEnv(MultiAgentEnv):
         for player in self.agent_team.ssp_agents():
             player.policy.grpc_host = self.config.grpc.host
             player.policy.grpc_port = self.config.grpc.port
+        if (coach := self.agent_team.coach) is not None:
+            coach.policy.grpc_host = self.config.grpc.host
+            coach.policy.grpc_port = self.config.grpc.port
+
 
     # ------------------------------------------------------------------
     # State / observation helpers

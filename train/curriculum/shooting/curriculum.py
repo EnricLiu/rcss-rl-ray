@@ -4,6 +4,7 @@ from typing import override
 from rcss_env.reward import RewardFnMixin
 from schema import GameServerSchema, TeamSchema, TeamsSchema, StoppingEvents, RefereeSchema, RoomInitState, Position, \
     TeamSide, PlayerSchema, PlayerInitState, SspAgentPolicy, BotPolicy
+from schema.coach import CoachSchema
 from ..mixin import CurriculumMixin
 
 from .reward import ShootingReward
@@ -44,10 +45,21 @@ class ShootingCurriculum(CurriculumMixin):
         if is_agent:
             players.append(self.__make_agent_player())
 
+        coach = None
+        if is_agent:
+            coach = CoachSchema(
+                policy=SspAgentPolicy(
+                    image=self.config.player_agent_image,
+                    grpc_host=self.config.grpc_server.host,
+                    grpc_port=self.config.grpc_server.port,
+                ),
+            )
+
         ret = TeamSchema(
             name=name,
             side=side,
             players=players,
+            coach=coach,
         )
 
         return ret
