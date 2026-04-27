@@ -22,6 +22,7 @@ from client.base.allocator.config import AllocatorConfig
 from rcss_env.action import Action
 from rcss_env.action_mask import ActionMaskResolver
 from rcss_env.bhv import NeckViewBhv
+from rcss_env.grpc_srv.proto import pb2
 from rcss_env.reward import DummyRewardFn
 from schema import (
     BotPolicy,
@@ -282,3 +283,71 @@ def test_states_to_obs_coerces_float64_and_non_finite_values_into_space(
         assert env.observation_spaces[agent_id].contains(agent_obs)
 
 
+def test_calc_reward_uses_coach_truth_instead_of_player_full_world_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    EnvConfig, RCSSEnv, CurriculumMixin = _load_env_types(monkeypatch)
+    schema = _build_schema()
+
+    class RecordingReward(DummyRewardFn):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[tuple[pb2.WorldModel | None, pb2.WorldModel]] = []
+
+        def compute(
+            self,
+            prev_obs: pb2.WorldModel | None,
+            prev_truth: pb2.WorldModel | None,
+            curr_obs: pb2.WorldModel,
+            curr_truth: pb2.WorldModel,
+        ) -> float:
+            self.calls.append((prev_truth, curr_truth))
+            assert prev_truth is not None
+            return float(curr_truth.our_team_score - prev_truth.our_team_score)
+
+    reward = RecordingReward()
+
+    class StaticCurriculum(CurriculumMixin):
+        def make_schema(self) -> GameServerSchema:
+            return schema
+
+        def reward_fn(self) -> RecordingReward:
+            return reward
+
+    def fake_setup(self: Any) -> None:
+        self._RCSSEnv__allocator = object()
+        self._RCSSEnv__servicer = FakeServicer()
+
+    monkeypatch.setattr(Action, "n_actions", classmethod(lambda cls: len(cls.action_names())))
+    monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
+
+    env = RCSSEnv(
+        EnvConfig(
+            grpc=ServerConfig(host=IPv4Address("127.0.0.1"), port=50051),
+            allocator=AllocatorConfig(base_url="http://allocator:5555"),
+            curriculum=StaticCurriculum(),
+        )
+    )
+
+    prev_state = pb2.State(
+        world_model=pb2.WorldModel(cycle=1, our_team_score=0),
+        full_world_model=pb2.WorldModel(cycle=1, our_team_score=100),
+    )
+    curr_state = pb2.State(
+        world_model=pb2.WorldModel(cycle=2, our_team_score=0),
+        full_world_model=pb2.WorldModel(cycle=2, our_team_score=100),
+    )
+    prev_truth = pb2.WorldModel(cycle=1, our_team_score=2)
+    curr_truth = pb2.WorldModel(cycle=2, our_team_score=3)
+
+    reward_value = env._RCSSEnv__calc_reward(
+        1,
+        prev_state,
+        curr_state,
+        prev_truth,
+        curr_truth,
+    )
+
+    assert reward_value == 1.0
+    assert reward.calls[0][0].our_team_score == 2
+    assert reward.calls[0][1].our_team_score == 3

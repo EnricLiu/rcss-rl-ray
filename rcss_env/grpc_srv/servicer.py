@@ -23,6 +23,7 @@ from grpc import aio as grpc_aio
 from .proto import pb2
 from .proto import pb2_grpc
 from .batch_queue import BatchQueue, BatchQueueError
+from .truth_buffer import TruthWorldModelBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,8 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_state_cycles: dict[int, int] = {}
         self._last_get_action_meta: dict[int, dict[str, Any]] = {}
         self._last_action_send_meta: dict[int, dict[str, Any]] = {}
+        self._last_coach_truth_meta: dict[str, Any] = {}
+        self._truth_buffer = TruthWorldModelBuffer()
         self._runtime_error: Exception | None = None
 
         self._server_params: pb2.ServerParam | None = None
@@ -117,6 +120,8 @@ class GameServicer(pb2_grpc.GameServicer):
                 str(unum): dict(meta)
                 for unum, meta in sorted(self._last_action_send_meta.items())
             },
+            "last_coach_truth": dict(self._last_coach_truth_meta),
+            "truth_buffer": self._truth_buffer.snapshot(),
             "runtime_error": None if self._runtime_error is None else {
                 "type": type(self._runtime_error).__name__,
                 "message": str(self._runtime_error),
@@ -241,8 +246,19 @@ class GameServicer(pb2_grpc.GameServicer):
     async def GetCoachActions(
         self, request: pb2.State, context: grpc.aio.ServicerContext
     ) -> pb2.CoachActions:
-        """Handle a GetCoachActions RPC (currently returns empty actions)."""
-        logger.debug("GetCoachActions called (cycle=%d)", request.world_model.cycle)
+        """Store the coach truth WorldModel and return empty coach actions."""
+        if not request.HasField("world_model"):
+            logger.warning("GetCoachActions received state with no world_model")
+            return pb2.CoachActions()
+
+        wm = request.world_model
+        await self._truth_buffer.put(wm)
+        self._last_coach_truth_meta = {
+            "cycle": wm.cycle,
+            "received_monotonic_s": round(perf_counter(), 6),
+            "game_mode_type": wm.game_mode_type,
+        }
+        logger.debug("GetCoachActions stored coach truth world model (cycle=%d)", wm.cycle)
         return pb2.CoachActions()
 
     async def GetTrainerActions(
@@ -419,6 +435,25 @@ class GameServicer(pb2_grpc.GameServicer):
         logger.debug("__send_actions: done, sent to unums=%s", sorted(ret))
         return ret
 
+    async def __fetch_truth_world_model(
+        self,
+        cycle: int,
+        timeout: float,
+    ) -> pb2.WorldModel:
+        """Await the exact-cycle coach truth WorldModel."""
+        logger.debug(
+            "__fetch_truth_world_model: waiting for cycle=%d timeout=%.1fs snapshot=%s",
+            cycle,
+            timeout,
+            self._truth_buffer.snapshot(),
+        )
+        truth = await self._truth_buffer.get(cycle, timeout=timeout)
+        logger.debug("__fetch_truth_world_model: received cycle=%d", truth.cycle)
+        return truth
+
+    async def __discard_truth_before(self, cycle: int) -> None:
+        await self._truth_buffer.discard_before(cycle)
+
     # ------------------------------------------------------------------
     # Synchronous bridge (called from the RL thread)
     # ------------------------------------------------------------------
@@ -469,6 +504,21 @@ class GameServicer(pb2_grpc.GameServicer):
         """Send actions to all specified unums (blocking)."""
         self.__run_coro(self.__send_actions(actions), timeout=ACTION_SEND_TIMEOUT_S)
 
+    def fetch_truth_world_model(
+        self,
+        cycle: int,
+        timeout: float = STATE_GET_TIMEOUT_S,
+    ) -> pb2.WorldModel:
+        """Block until the exact-cycle coach truth WorldModel is available."""
+        return self.__run_coro(
+            self.__fetch_truth_world_model(cycle=cycle, timeout=timeout),
+            timeout=timeout + 0.5,
+        )
+
+    def discard_truth_before(self, cycle: int) -> None:
+        """Drop buffered coach truth world models older than *cycle*."""
+        self.__run_coro(self.__discard_truth_before(cycle), timeout=ACTION_SEND_TIMEOUT_S)
+
     def last_state(self, unum: int) -> pb2.State | None:
         """Return the last fetched State for a unum, or None."""
         return self._states.get(unum)
@@ -500,6 +550,8 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_state_cycles.clear()
         self._last_get_action_meta.clear()
         self._last_action_send_meta.clear()
+        self._last_coach_truth_meta.clear()
+        await self._truth_buffer.reset()
         self._runtime_error = None
         self._states_queues.clear()
         self._action_queues.clear()
@@ -525,6 +577,8 @@ class GameServicer(pb2_grpc.GameServicer):
             self._last_state_cycles.clear()
             self._last_get_action_meta.clear()
             self._last_action_send_meta.clear()
+            self._last_coach_truth_meta.clear()
+            self._truth_buffer = TruthWorldModelBuffer()
             self._runtime_error = None
             self._states_queues.clear()
             self._action_queues.clear()

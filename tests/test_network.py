@@ -16,6 +16,7 @@ from rcss_env.grpc_srv.batch_queue import BatchQueue, BatchQueueDispatchError
 from rcss_env.grpc_srv.proto import pb2
 import rcss_env.grpc_srv.servicer as servicer_module
 from rcss_env.grpc_srv.servicer import GameServicer
+from rcss_env.grpc_srv.truth_buffer import TruthWorldModelTimeoutError
 
 
 def test_batch_queue_reset_clears_state_and_allows_restart() -> None:
@@ -155,4 +156,50 @@ def test_game_servicer_action_wait_timeout_raises_reset_needed(
 		thread.join(timeout=1.0)
 		loop.close()
 
+
+def test_game_servicer_buffers_coach_truth_by_exact_cycle() -> None:
+	loop = asyncio.new_event_loop()
+	started = threading.Event()
+
+	def loop_runner() -> None:
+		asyncio.set_event_loop(loop)
+		started.set()
+		loop.run_forever()
+
+	thread = threading.Thread(target=loop_runner, daemon=True)
+	thread.start()
+	started.wait(timeout=1.0)
+
+	servicer = GameServicer()
+	servicer.bind_loop(loop)
+
+	try:
+		servicer.reset()
+
+		coach_state = pb2.State(
+			agent_type=pb2.CoachT,
+			world_model=pb2.WorldModel(
+				cycle=7,
+				our_team_score=3,
+				game_mode_type=pb2.GameModeType.PlayOn,
+			),
+		)
+		future = asyncio.run_coroutine_threadsafe(
+			servicer.GetCoachActions(coach_state, None),
+			loop,
+		)
+		assert future.result(timeout=1.0) == pb2.CoachActions()
+
+		truth = servicer.fetch_truth_world_model(7, timeout=0.1)
+		assert truth.cycle == 7
+		assert truth.our_team_score == 3
+
+		with pytest.raises(gymnasium.error.ResetNeeded, match="cycle=8") as exc_info:
+			servicer.fetch_truth_world_model(8, timeout=0.01)
+		assert isinstance(exc_info.value.__cause__, TruthWorldModelTimeoutError)
+	finally:
+		asyncio.run_coroutine_threadsafe(servicer._truth_buffer.reset(), loop).result(timeout=1.0)
+		loop.call_soon_threadsafe(loop.stop)
+		thread.join(timeout=1.0)
+		loop.close()
 

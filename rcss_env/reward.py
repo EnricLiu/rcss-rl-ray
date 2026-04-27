@@ -70,9 +70,11 @@ class DummyRewardFn(RewardFnMixin):
 
         rewards = 0.0
 
+        prev_score_wm = prev_truth or prev_obs
+
         # Goal-difference reward: own goal +1, opponent goal -1
-        score_diff = curr_obs.our_team_score - prev_obs.our_team_score
-        opp_diff = curr_obs.their_team_score - prev_obs.their_team_score
+        score_diff = curr_truth.our_team_score - prev_score_wm.our_team_score
+        opp_diff = curr_truth.their_team_score - prev_score_wm.their_team_score
         rewards += float(score_diff)
         rewards -= float(opp_diff)
 

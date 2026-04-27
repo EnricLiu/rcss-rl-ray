@@ -35,9 +35,10 @@ class ShootingCurriculumConfig(BaseModel):
     reward_goal: float = Field(default=10.0, ge=0.0)
     reward_concede: float = Field(default=10.0, ge=0.0)
     reward_out_of_bounds: float = Field(default=1.0, ge=0.0)
-    # One-shot bonus on the rising edge of `self.is_kickable` (agent first
-    # touches / gains control of the ball). Critical to bootstrap "approach the
-    # ball" behaviour together with the agent->ball shaping below.
+    # One-shot bonus on the rising edge of the truth `kickable_teammate_id`
+    # matching `agent_unum` (agent first touches / gains control of the ball).
+    # Critical to bootstrap "approach the ball" behaviour together with the
+    # agent->ball shaping below.
     reward_kickable_bonus: float = Field(default=0.5, ge=0.0)
 
     # ---- Potential-based shaping (PBRS, gamma-aware) ----

@@ -93,6 +93,8 @@ class RCSSEnv(MultiAgentEnv):
         # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
         self.__curr_states: dict[int, pb2.State] = {}
+        self.__prev_truth_world_model: pb2.WorldModel | None = None
+        self.__curr_truth_world_model: pb2.WorldModel | None = None
         self.__last_reward_breakdowns: dict[int, dict[str, float]] = {}
         self.__player_by_unum = {
             player.unum: player
@@ -160,6 +162,8 @@ class RCSSEnv(MultiAgentEnv):
             "agent_unums": sorted(self.agent_team_unums),
             "prev_state_cycles": self.__state_cycles(self.__prev_states),
             "curr_state_cycles": self.__state_cycles(self.__curr_states),
+            "prev_truth_cycle": self.__truth_cycle(self.__prev_truth_world_model),
+            "curr_truth_cycle": self.__truth_cycle(self.__curr_truth_world_model),
             "has_room": self.has_room(),
             "room": {
                 "name": self.room.info.name,
@@ -235,10 +239,12 @@ class RCSSEnv(MultiAgentEnv):
             logger.debug("Requested room %s from allocator and started simulation", self.room.info.name)
             # 5. Wait for all agent sidecars to send their initial states
             states = self.__collect_states()
+            truth = self.__collect_truth_world_model(self.__aligned_state_cycle(states))
             logger.debug(
-                "Reset: collected initial states for unums=%s cycles=%s",
+                "Reset: collected initial states for unums=%s cycles=%s truth_cycle=%d",
                 sorted(states.keys()),
                 self.__state_cycles(states),
+                truth.cycle,
             )
 
         except Exception as e:
@@ -249,6 +255,7 @@ class RCSSEnv(MultiAgentEnv):
 
         # 6. Build initial observations and info dicts
         self.__curr_states = states
+        self.__curr_truth_world_model = truth
         obs = self.__states_to_obs(states)
         infos: dict[int, dict[str, Any]] = {unum: {} for unum in self.agent_team_unums}
         return obs, infos
@@ -277,18 +284,31 @@ class RCSSEnv(MultiAgentEnv):
 
         # 2. Collect new states and compare with the previous step for rewards
         self.__prev_states = self.__curr_states
+        self.__prev_truth_world_model = self.__curr_truth_world_model
         logger.debug("Step %d: waiting for states from simulation", self.__timestep)
         curr_states = self.__collect_states()
         self.__curr_states = curr_states
 
-        self.__timestep = next(iter(curr_states.values())).world_model.cycle
+        curr_cycle = self.__aligned_state_cycle(curr_states)
+        curr_truth = self.__collect_truth_world_model(curr_cycle)
+        self.__curr_truth_world_model = curr_truth
+
+        self.__timestep = curr_cycle
 
         self.__last_reward_breakdowns = {}
         rewards: dict[int, float] = {}
         for unum, curr_state in curr_states.items():
             if unum not in self.agent_team_unums:
                 continue
-            rewards[unum] = self.__calc_reward(unum, self.__prev_states.get(unum), curr_state)
+            rewards[unum] = self.__calc_reward(
+                unum,
+                self.__prev_states.get(unum),
+                curr_state,
+                self.__prev_truth_world_model,
+                curr_truth,
+            )
+
+        self.__get_servicer().discard_truth_before(curr_cycle)
 
         curr_wms = {unum: state.world_model for unum, state in curr_states.items()}
 
@@ -414,9 +434,8 @@ class RCSSEnv(MultiAgentEnv):
         return latest_state.world_model
 
     def __prev_truth_wm(self, unum: int) -> pb2.WorldModel | None:
-        """Return the full-information WorldModel from the previous step for the given unum."""
-        if (prev_state := self.__prev_state(unum)) is None: return None
-        return prev_state.full_world_model
+        """Return the previous coach truth WorldModel."""
+        return self.__prev_truth_world_model
 
     def __collect_states(self, timeout_s: float = 180.0) -> dict[int, pb2.State]:
         """
@@ -453,11 +472,37 @@ class RCSSEnv(MultiAgentEnv):
                 "Failed to fetch states for world models, likely due to a communication issue with the simulation. "
             ) from exc
 
+    def __collect_truth_world_model(
+        self,
+        cycle: int,
+        timeout_s: float = 180.0,
+    ) -> pb2.WorldModel:
+        """Fetch the exact-cycle coach truth WorldModel used for reward computation."""
+        try:
+            truth = self.__get_servicer().fetch_truth_world_model(cycle, timeout=timeout_s)
+            if truth.cycle != cycle:
+                raise ValueError(
+                    f"Fetched coach truth cycle={truth.cycle}, expected cycle={cycle}"
+                )
+            return truth
+        except Exception as exc:
+            logger.warning(
+                "Timeout fetching coach truth world model for cycle=%d: %s runtime=%s",
+                cycle,
+                exc,
+                self.runtime_diagnostics(),
+            )
+            raise gymnasium.error.ResetNeeded(
+                f"Failed to fetch coach truth world model for cycle={cycle}. "
+            ) from exc
+
     def __reset_episode_state(self) -> None:
         """Clear episode-local caches so reset failures do not leak prior state."""
         self.__timestep = 0
         self.__prev_states = {}
         self.__curr_states = {}
+        self.__prev_truth_world_model = None
+        self.__curr_truth_world_model = None
         self.__last_reward_breakdowns = {}
 
     def __reset_servicer_state(self) -> None:
@@ -528,6 +573,20 @@ class RCSSEnv(MultiAgentEnv):
                 logger.debug("State for unum=%d is missing or has no world_model; cannot extract cycle", unum)
         return ret
 
+    @staticmethod
+    def __truth_cycle(world_model: pb2.WorldModel | None) -> int | None:
+        return None if world_model is None else int(world_model.cycle)
+
+    def __aligned_state_cycle(self, states: dict[int, pb2.State]) -> int:
+        cycles_by_unum = self.__state_cycles(states)
+        if len(cycles_by_unum) != len(states):
+            missing = sorted(set(states) - set(cycles_by_unum))
+            raise ValueError(f"Missing world_model cycle for unums: {missing}")
+        cycles = set(cycles_by_unum.values())
+        if len(cycles) != 1:
+            raise ValueError(f"Expected exactly one aligned state cycle, got {sorted(cycles)}")
+        return next(iter(cycles))
+
     def __validate_action_mask(self, unum: int, action_dict: dict[str, Any]) -> None:
         discrete_action = int(action_dict["actions"])
         act_mask = self.__action_mask(unum)
@@ -580,24 +639,23 @@ class RCSSEnv(MultiAgentEnv):
         unum: int,
         prev_states: pb2.State | None,
         curr_states: pb2.State,
+        prev_truth: pb2.WorldModel | None,
+        curr_truth: pb2.WorldModel,
     ) -> float:
         """Compute the per-step reward for a single agent.
 
-        The reward function receives both the observation WorldModel and the
-        full-information WorldModel to support ground-truth-based reward shaping.
+        The reward function receives player observations plus exact-cycle coach
+        truth world models to support ground-truth-based reward shaping.
         """
         prev_obs = None
-        prev_truth = None
         if prev_states is not None:
             prev_obs = prev_states.world_model
-            prev_truth = prev_states.full_world_model
 
         if curr_states is None:
             logger.warning("Current state for unum=%d is missing; cannot compute reward", unum)
             return 0.0
 
         curr_obs = curr_states.world_model
-        curr_truth = curr_states.full_world_model
 
         if prev_obs is None or prev_truth is None:
             return 0.0

@@ -31,6 +31,7 @@ def _world_model(
     self_kickable: bool = False,
     our_side: int = pb2.LEFT,
     cycle: int = 0,
+    agent_unum: int = 1,
 ) -> pb2.WorldModel:
     return pb2.WorldModel(
         our_team_score=our_score,
@@ -45,6 +46,15 @@ def _world_model(
             position=pb2.Vector2D(x=self_x, y=self_y),
             is_kickable=self_kickable,
         ),
+        our_players_dict={
+            agent_unum: pb2.Player(
+                uniform_number=agent_unum,
+                position=pb2.Vector2D(x=self_x, y=self_y),
+                dist_from_ball=((self_x - ball_x) ** 2 + (self_y - ball_y) ** 2) ** 0.5,
+                ball_reach_steps=0 if self_kickable else 1,
+            ),
+        },
+        kickable_teammate_id=agent_unum if self_kickable else 0,
     )
 
 
@@ -82,6 +92,26 @@ def test_prefers_truth_over_partial_observation() -> None:
     curr_truth = _world_model(our_score=1, ball_x=20.0)
 
     assert reward.compute(noisy_prev_obs, prev_truth, noisy_curr_obs, curr_truth) == 10.0
+
+
+def test_prefers_truth_for_agent_to_ball_shaping() -> None:
+    reward = _reward(**{**_OFF, "reward_agent_to_ball_shaping": 1.0})
+    noisy_prev_obs = _world_model(self_x=10.0, ball_x=20.0, cycle=1)
+    noisy_curr_obs = _world_model(self_x=0.0, ball_x=20.0, cycle=2)
+    prev_truth = _world_model(self_x=0.0, ball_x=20.0, cycle=1)
+    curr_truth = _world_model(self_x=10.0, ball_x=20.0, cycle=2)
+
+    assert reward.compute(noisy_prev_obs, prev_truth, noisy_curr_obs, curr_truth) > 0.0
+
+
+def test_prefers_truth_for_kickable_bonus() -> None:
+    reward = _reward(**{**_OFF, "reward_kickable_bonus": 0.5})
+    noisy_prev_obs = _world_model(self_kickable=True, cycle=1)
+    noisy_curr_obs = _world_model(self_kickable=False, cycle=2)
+    prev_truth = _world_model(self_kickable=False, cycle=1)
+    curr_truth = _world_model(self_kickable=True, cycle=2)
+
+    assert reward.compute(noisy_prev_obs, prev_truth, noisy_curr_obs, curr_truth) == pytest.approx(0.5)
 
 
 # ---- Agent -> ball shaping (the critical "approach the ball" signal) ------
@@ -221,4 +251,3 @@ def test_reward_fn_mixin_breakdown_dict_is_populated() -> None:
     breakdown = reward.last_reward_breakdown
     assert breakdown["agent_to_ball_shaping"] > 0.0
     assert sum(breakdown.values()) == pytest.approx(total)
-

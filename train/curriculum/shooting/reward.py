@@ -12,6 +12,8 @@ Design goals (in order of priority):
 """
 
 import math
+import logging
+
 from dataclasses import dataclass, asdict
 from typing import override
 
@@ -20,6 +22,7 @@ from rcss_env.reward import RewardFnMixin
 
 from .config import ShootingCurriculumConfig
 
+logger = logging.getLogger(__name__)
 
 _PITCH_HALF_LENGTH = 52.5
 _PITCH_HALF_WIDTH = 34.0
@@ -49,14 +52,46 @@ def _ball_to_goal_distance(wm: pb2.WorldModel, fallback_side: str) -> float:
     return math.hypot(target_x - wm.ball.position.x, wm.ball.position.y)
 
 
-def _agent_to_ball_distance(wm: pb2.WorldModel) -> float:
-    """Prefer the precomputed `self.dist_from_ball`; fall back to recompute."""
-    s = wm.self
+def _agent_player(wm: pb2.WorldModel, agent_unum: int) -> pb2.Player | None:
+    player = wm.our_players_dict.get(agent_unum)
+    if player is not None:
+        return player
+
+    for candidate in wm.teammates:
+        if candidate.uniform_number == agent_unum:
+            return candidate
+
+    return None
+
+
+def _agent_to_ball_distance(truth: pb2.WorldModel, obs: pb2.WorldModel) -> float:
+    """Prefer truth player data; fall back to `self` only for compatibility."""
+    unum = obs.self.uniform_number
+    player = _agent_player(truth, unum)
+    if player is not None:
+        d = float(player.dist_from_ball)
+        if d > 0.0:
+            return d
+        return math.hypot(
+            player.position.x - truth.ball.position.x,
+            player.position.y - truth.ball.position.y,
+        )
+
+    logger.warning("Agent player with unum %d not found in truth world model; falling back to obs.self for agent->ball distance",
+        obs.self.uniform_number,
+    )
+    s = obs.self
     d = float(s.dist_from_ball)
     if d > 0.0:
         return d
-    return math.hypot(s.position.x - wm.ball.position.x,
-                      s.position.y - wm.ball.position.y)
+    return math.hypot(
+        s.position.x - obs.ball.position.x,
+        s.position.y - obs.ball.position.y,
+    )
+
+
+def _agent_is_kickable(obs: pb2.WorldModel) -> bool:
+    return bool(obs.self.is_kickable)
 
 
 def _ball_velocity_toward_goal(wm: pb2.WorldModel, fallback_side: str) -> float:
@@ -126,62 +161,61 @@ class ShootingReward(RewardFnMixin):
         self.last_breakdown: RewardBreakdown = RewardBreakdown()
 
     # -- Potential functions -------------------------------------------------
-    def _phi_agent_to_ball(self, wm: pb2.WorldModel) -> float:
+    def _phi_agent_to_ball(self, truth: pb2.WorldModel, obs: pb2.WorldModel) -> float:
         # Negative distance, normalized to roughly [-1, 0].
-        return -_agent_to_ball_distance(wm) / _PITCH_DIAGONAL
+        return -_agent_to_ball_distance(truth, obs) / _PITCH_DIAGONAL
 
-    def _phi_ball_to_goal(self, wm: pb2.WorldModel) -> float:
+    def _phi_ball_to_goal(self, truth: pb2.WorldModel) -> float:
         # Negative distance, normalized to roughly [-1, 0].
-        return -_ball_to_goal_distance(wm, self.config.team_side) / _MAX_BALL_TO_GOAL_DISTANCE
+        return -_ball_to_goal_distance(truth, self.config.team_side) / _MAX_BALL_TO_GOAL_DISTANCE
 
     @override
     def compute(
         self,
         prev_obs: pb2.WorldModel | None,
-        _prev_truth: pb2.WorldModel | None,
+        prev_truth: pb2.WorldModel | None,
         curr_obs: pb2.WorldModel,
-        _curr_truth: pb2.WorldModel,
+        curr_truth: pb2.WorldModel,
     ) -> float:
-        # Use full-information world models whenever possible.
-        prev_wm = prev_obs
-        if prev_wm is None:
+        if prev_obs is None or prev_truth is None:
             self.last_breakdown = RewardBreakdown()
             self.reset_reward_breakdown()
             return 0.0
-        curr_wm = curr_obs
+
+        prev_truth_wm = prev_truth or prev_obs
+        curr_truth_wm = curr_truth
+        
+        prev_obs_wm = prev_obs
+        curr_obs_wm = curr_obs
 
         cfg = self.config
         bd = RewardBreakdown()
 
         # -- 1) Sparse goal events --------------------------------------------
-        our_goal_delta, their_goal_delta = _score_delta(prev_wm, curr_wm)
+        our_goal_delta, their_goal_delta = _score_delta(prev_truth_wm, curr_truth_wm)
         scored = (our_goal_delta != 0) or (their_goal_delta != 0)
         bd.goal = cfg.reward_goal * float(our_goal_delta)
         bd.concede = -cfg.reward_concede * float(their_goal_delta)
 
         # -- 2) Out-of-bounds (edge-triggered, ignore goal-mouth crossings) ---
-        prev_oob = _is_ball_out_of_bounds(prev_wm)
-        curr_oob = _is_ball_out_of_bounds(curr_wm)
+        prev_oob = _is_ball_out_of_bounds(prev_truth_wm)
+        curr_oob = _is_ball_out_of_bounds(curr_truth_wm)
         if (
             not scored
             and curr_oob
             and not prev_oob
-            and not _is_ball_in_goal_mouth(curr_wm)
+            and not _is_ball_in_goal_mouth(curr_truth_wm)
         ):
             bd.out_of_bounds = -cfg.reward_out_of_bounds
 
         # -- 3) Kickable rising-edge bonus -----------------------------------
-        # `self` here refers to the agent because curr_wm is the agent-centric
-        # full world model (env passes `state.full_world_model`).
-        prev_kickable = bool(prev_wm.self.is_kickable)
-        curr_kickable = bool(curr_wm.self.is_kickable)
-        if curr_kickable:
+        prev_kickable = _agent_is_kickable(prev_obs_wm)
+        curr_kickable = _agent_is_kickable(curr_obs_wm)
+        if curr_kickable and not prev_kickable:
             bd.kickable_bonus += cfg.reward_kickable_bonus
-            if not prev_kickable:
-                bd.kickable_bonus += cfg.reward_kickable_bonus
 
         # -- Cycle gap (used by shaping & time decay) -------------------------
-        raw_gap = curr_wm.cycle - prev_wm.cycle
+        raw_gap = curr_truth_wm.cycle - prev_truth_wm.cycle
         # If the gap is non-positive (e.g. wrap-around) or larger than the cap
         # (a stoppage happened between two PlayOn frames), suppress shaping &
         # use a small cap for time decay to avoid spikes.
@@ -194,18 +228,18 @@ class ShootingReward(RewardFnMixin):
             gamma = cfg.gamma_shaping
             clip_lim = cfg.shaping_clip
 
-            phi_a_prev = self._phi_agent_to_ball(prev_wm)
-            phi_a_curr = self._phi_agent_to_ball(curr_wm)
+            phi_a_prev = self._phi_agent_to_ball(prev_truth_wm, prev_obs_wm)
+            phi_a_curr = self._phi_agent_to_ball(curr_truth_wm, curr_obs_wm)
             f_agent = _clip(gamma * phi_a_curr - phi_a_prev, clip_lim)
             bd.agent_to_ball_shaping = cfg.reward_agent_to_ball_shaping * f_agent
 
-            phi_b_prev = self._phi_ball_to_goal(prev_wm)
-            phi_b_curr = self._phi_ball_to_goal(curr_wm)
+            phi_b_prev = self._phi_ball_to_goal(prev_truth_wm)
+            phi_b_curr = self._phi_ball_to_goal(curr_truth_wm)
             f_ball = _clip(gamma * phi_b_curr - phi_b_prev, clip_lim)
             bd.ball_to_goal_shaping = cfg.reward_ball_to_goal_shaping * f_ball
 
             # -- 5) Dense ball-velocity-toward-goal --------------------------
-            v_to_goal = _ball_velocity_toward_goal(curr_wm, cfg.team_side)
+            v_to_goal = _ball_velocity_toward_goal(curr_truth_wm, cfg.team_side)
             v_norm = max(-1.0, min(1.0, v_to_goal / _MAX_BALL_SPEED))
             bd.ball_velocity_to_goal = cfg.reward_ball_velocity_to_goal * v_norm
 

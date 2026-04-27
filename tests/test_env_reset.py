@@ -50,6 +50,9 @@ class FakeServicer:
     def reset(self) -> None:
         self.reset_calls += 1
 
+    def fetch_truth_world_model(self, cycle: int, timeout: float = 180.0) -> SimpleNamespace:
+        return SimpleNamespace(cycle=cycle)
+
 
 class RaisingAllocator:
     def request_room(self, schema: GameServerSchema):
@@ -190,7 +193,10 @@ def test_reset_re_registers_missing_agent_unums_after_servicer_reset(
         servicer=servicer,
     )
 
-    states = {1: object(), 2: object()}
+    states = {
+        1: SimpleNamespace(world_model=SimpleNamespace(cycle=11)),
+        2: SimpleNamespace(world_model=SimpleNamespace(cycle=11)),
+    }
     monkeypatch.setattr(env, "_RCSSEnv__collect_states", lambda timeout_s=30.0: states)
     monkeypatch.setattr(
         env,
@@ -266,7 +272,14 @@ def test_reset_syncs_runtime_grpc_port_into_allocator_schema(
         self._RCSSEnv__sync_room_grpc_port(43123)
 
     monkeypatch.setattr(RCSSEnv, "_start_grpc_server", fake_start_grpc_server)
-    monkeypatch.setattr(env, "_RCSSEnv__collect_states", lambda timeout_s=30.0: {1: object(), 2: object()})
+    monkeypatch.setattr(
+        env,
+        "_RCSSEnv__collect_states",
+        lambda timeout_s=30.0: {
+            1: SimpleNamespace(world_model=SimpleNamespace(cycle=11)),
+            2: SimpleNamespace(world_model=SimpleNamespace(cycle=11)),
+        },
+    )
     monkeypatch.setattr(
         env,
         "_RCSSEnv__states_to_obs",

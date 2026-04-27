@@ -42,6 +42,9 @@ class FakeServicer:
     def reset(self) -> None:
         return None
 
+    def fetch_truth_world_model(self, cycle: int, timeout: float = 180.0) -> SimpleNamespace:
+        return SimpleNamespace(cycle=cycle)
+
     def debug_snapshot(self) -> dict[str, Any]:
         return {"registered": sorted(self._unums)}
 
