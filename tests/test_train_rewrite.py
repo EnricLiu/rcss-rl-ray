@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -9,12 +10,14 @@ from train.factory import build_env_config
 from train.train import (
     ENV_NAME,
     build_callbacks_class,
+    build_tune_run_kwargs,
     build_ppo_config,
     build_run_config,
     build_train_config,
     build_tune_callbacks,
     build_tune_config,
     parse_args,
+    run_training,
 )
 from train.curriculum.shooting import ShootingCurriculum
 
@@ -61,6 +64,56 @@ def test_build_train_config_parses_tune_and_aim_flags() -> None:
     assert cfg.num_iterations == 7
     assert cfg.our_goalie_unum is None
     assert cfg.goal_r is None
+
+
+def test_build_train_config_parses_resume_from_checkpoint() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--resume-from-checkpoint",
+                "/tmp/checkpoint_000123",
+            ]
+        )
+    )
+
+    assert cfg.resume_from_checkpoint == "/tmp/checkpoint_000123"
+
+
+def test_restore_and_resume_from_checkpoint_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        build_train_config(
+            parse_args(
+                [
+                    "--ray-address",
+                    "local",
+                    "--disable-aim",
+                    "--restore",
+                    "/tmp/exp",
+                    "--resume-from-checkpoint",
+                    "/tmp/checkpoint_000123",
+                ]
+            )
+        )
+
+
+def test_resume_from_checkpoint_requires_single_sample() -> None:
+    with pytest.raises(ValueError, match="single trial"):
+        build_train_config(
+            parse_args(
+                [
+                    "--ray-address",
+                    "local",
+                    "--disable-aim",
+                    "--num-samples",
+                    "2",
+                    "--resume-from-checkpoint",
+                    "/tmp/checkpoint_000123",
+                ]
+            )
+        )
 
 
 def test_default_aim_experiment_tracks_train_experiment_name() -> None:
@@ -189,6 +242,69 @@ def test_build_tune_config_and_run_config_without_aim() -> None:
     assert run_config.callbacks == []
     assert run_config.checkpoint_config.checkpoint_frequency == 0
     assert run_config.checkpoint_config.checkpoint_score_attribute == cfg.checkpoint_metric
+
+
+def test_build_tune_run_kwargs_matches_run_and_tune_config() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--no-timestamp-experiment-name",
+                "--experiment-name",
+                "unit-train",
+            ]
+        )
+    )
+
+    param_space = {"lr": 1e-4}
+    kwargs = build_tune_run_kwargs(cfg, param_space)
+
+    assert kwargs["name"] == "unit-train"
+    assert kwargs["storage_path"] == cfg.storage_path
+    assert kwargs["metric"] == cfg.metric
+    assert kwargs["mode"] == cfg.mode
+    assert kwargs["config"] == param_space
+    assert kwargs["num_samples"] == cfg.num_samples
+    assert kwargs["stop"] == {"training_iteration": cfg.num_iterations}
+
+
+def test_run_training_uses_tune_run_for_checkpoint_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--resume-from-checkpoint",
+                "/tmp/checkpoint_000123",
+                "--no-timestamp-experiment-name",
+                "--experiment-name",
+                "resume-exp",
+            ]
+        )
+    )
+
+    calls: dict[str, Any] = {}
+    sentinel = SimpleNamespace(trials=[])
+
+    monkeypatch.setattr("train.train.build_param_space", lambda train_cfg: {"lr": train_cfg.lr})
+
+    def _fake_tune_run(algo: str, **kwargs: Any) -> Any:
+        calls["algo"] = algo
+        calls["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr("train.train.tune.run", _fake_tune_run)
+
+    result = run_training(cfg)
+
+    assert result is sentinel
+    assert calls["algo"] == cfg.algo
+    assert calls["kwargs"]["restore"] == "/tmp/checkpoint_000123"
+    assert calls["kwargs"]["name"] == "resume-exp"
+    assert calls["kwargs"]["config"] == {"lr": cfg.lr}
 
 
 def test_checkpoint_source_metric_defaults_to_tune_metric() -> None:

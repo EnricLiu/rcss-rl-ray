@@ -94,7 +94,8 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | `--ray-address` | `auto` | Ray address; use `local` or `none` for local `ray.init()` |
 | `--experiment-name` | `rcss-shooting` | Tune experiment name prefix |
 | `--storage-path` | `/mnt/ray/storage` | Shared Tune results/checkpoint root |
-| `--restore` | None | Restore an existing Tune experiment path |
+| `--restore` | None | Restore an existing Tune experiment directory/state |
+| `--resume-from-checkpoint` | None | Start a new Tune run by loading an RLlib checkpoint directory and continuing training |
 | `--timestamp-experiment-name` / `--no-timestamp-experiment-name` | true | Append a local timestamp to the Tune experiment name |
 | `--num-samples` | 1 | Number of Tune samples/trials |
 | `--metric` | `env_runners/episode_reward_mean` | Tune optimization / best-trial metric |
@@ -167,6 +168,9 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 
 ## Notes
 
+- `--restore` and `--resume-from-checkpoint` are different workflows and are mutually exclusive:
+  - `--restore` resumes a **Tune experiment state** (unfinished/errored trials in that experiment).
+  - `--resume-from-checkpoint` starts a **new Tune experiment** from a specific RLlib checkpoint directory such as `checkpoint_000099`.
 - The training path currently supports PPO and uses the legacy RLlib ModelV2 stack because `RCSSFCNet` extends `TorchModelV2`.
 - Aim logging is enabled by default. The project declares `aim` for Python versions below 3.13 because Aim's native dependency is not available for CPython 3.13 from PyPI.
 - `ShootingReward.compute()` uses full-information `truth` world models where available, combining sparse score deltas, non-goal out-of-bounds penalty, ball-to-goal progress shaping, and a small cycle-based time decay.

@@ -153,11 +153,32 @@ def build_tune_config(train_cfg: TrainConfig) -> tune.TuneConfig:
     )
 
 
-def build_tuner(train_cfg: TrainConfig) -> tune.Tuner:
+def build_param_space(train_cfg: TrainConfig) -> dict[str, Any]:
     env_config = build_env_config(train_cfg)
     ppo_config = build_ppo_config(train_cfg, env_config)
     ppo_config.validate()
-    param_space = ppo_config.to_dict()
+    return ppo_config.to_dict()
+
+
+def build_tune_run_kwargs(train_cfg: TrainConfig, param_space: dict[str, Any]) -> dict[str, Any]:
+    run_config = build_run_config(train_cfg)
+    tune_config = build_tune_config(train_cfg)
+    return {
+        "name": run_config.name,
+        "storage_path": run_config.storage_path,
+        "metric": tune_config.metric,
+        "mode": tune_config.mode,
+        "stop": run_config.stop,
+        "config": param_space,
+        "num_samples": tune_config.num_samples,
+        "checkpoint_config": run_config.checkpoint_config,
+        "callbacks": run_config.callbacks,
+        "log_to_file": run_config.log_to_file,
+    }
+
+
+def build_tuner(train_cfg: TrainConfig) -> tune.Tuner:
+    param_space = build_param_space(train_cfg)
 
     if train_cfg.restore_path:
         return tune.Tuner.restore(
@@ -172,6 +193,24 @@ def build_tuner(train_cfg: TrainConfig) -> tune.Tuner:
         tune_config=build_tune_config(train_cfg),
         run_config=build_run_config(train_cfg),
     )
+
+
+def run_training(train_cfg: TrainConfig) -> Any:
+    if train_cfg.resume_from_checkpoint:
+        param_space = build_param_space(train_cfg)
+        tune_run_kwargs = build_tune_run_kwargs(train_cfg, param_space)
+        logger.info(
+            "Starting new Tune experiment from checkpoint=%s",
+            train_cfg.resume_from_checkpoint,
+        )
+        return tune.run(
+            train_cfg.algo,
+            restore=train_cfg.resume_from_checkpoint,
+            **tune_run_kwargs,
+        )
+
+    tuner = build_tuner(train_cfg)
+    return tuner.fit()
 
 
 def init_ray(train_cfg: TrainConfig) -> None:
@@ -206,6 +245,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--experiment-name", type=str, default=defaults.experiment_name)
     parser.add_argument("--storage-path", type=str, default=defaults.storage_path)
     parser.add_argument("--restore", dest="restore_path", type=str, default=defaults.restore_path)
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        dest="resume_from_checkpoint",
+        type=str,
+        default=defaults.resume_from_checkpoint,
+        help="Start a new Tune run by loading weights/state from an RLlib checkpoint directory.",
+    )
     parser.add_argument("--timestamp-experiment-name", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--num-samples", type=int, default=defaults.num_samples)
     parser.add_argument("--metric", type=str, default=defaults.metric)
@@ -286,6 +332,7 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         experiment_name=args.experiment_name,
         storage_path=args.storage_path,
         restore_path=args.restore_path,
+        resume_from_checkpoint=args.resume_from_checkpoint,
         timestamp_experiment_name=args.timestamp_experiment_name,
         num_samples=args.num_samples,
         metric=args.metric,
@@ -343,24 +390,51 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
     )
 
 
-def log_best_result(results: tune.ResultGrid, train_cfg: TrainConfig) -> None:
-    if results.errors:
-        logger.error("Tune finished with %d errored trial(s)", len(results.errors))
-        for error in results.errors:
-            logger.error("Tune trial error: %s", error)
+def log_best_result(results: Any, train_cfg: TrainConfig) -> None:
+    if hasattr(results, "errors"):
+        if results.errors:
+            logger.error("Tune finished with %d errored trial(s)", len(results.errors))
+            for error in results.errors:
+                logger.error("Tune trial error: %s", error)
 
-    try:
-        best = results.get_best_result(metric=train_cfg.metric, mode=train_cfg.mode)
-    except RuntimeError as exc:
-        logger.warning("Could not determine best Tune result: %s", exc)
+        try:
+            best = results.get_best_result(metric=train_cfg.metric, mode=train_cfg.mode)
+        except RuntimeError as exc:
+            logger.warning("Could not determine best Tune result: %s", exc)
+            return
+
+        logger.info(
+            "Best trial finished: metric=%s mode=%s value=%s checkpoint=%s",
+            train_cfg.metric,
+            train_cfg.mode,
+            best.metrics.get(train_cfg.metric),
+            best.checkpoint,
+        )
         return
+
+    trials = getattr(results, "trials", [])
+    errored_trials = [trial for trial in trials if getattr(trial, "status", None) == "ERROR"]
+    if errored_trials:
+        logger.error("Tune finished with %d errored trial(s)", len(errored_trials))
+        for trial in errored_trials:
+            logger.error("Tune trial error: %s", getattr(trial, "error_file", trial))
+
+    best_trial = results.get_best_trial(metric=train_cfg.metric, mode=train_cfg.mode)
+    if best_trial is None:
+        logger.warning("Could not determine best Tune result: no completed trial found")
+        return
+
+    metric_value = RCSSCallbacks._lookup_metric(best_trial.last_result, train_cfg.metric)
+    checkpoint = results.get_best_checkpoint(best_trial, metric=train_cfg.metric, mode=train_cfg.mode)
+    if checkpoint is None:
+        checkpoint = results.get_last_checkpoint(best_trial)
 
     logger.info(
         "Best trial finished: metric=%s mode=%s value=%s checkpoint=%s",
         train_cfg.metric,
         train_cfg.mode,
-        best.metrics.get(train_cfg.metric),
-        best.checkpoint,
+        metric_value,
+        checkpoint,
     )
 
 
@@ -376,10 +450,13 @@ def main(argv: list[str] | None = None) -> int:
 
     init_ray(train_cfg)
     try:
-        tuner = build_tuner(train_cfg)
-        results = tuner.fit()
+        results = run_training(train_cfg)
         log_best_result(results, train_cfg)
-        return 1 if results.errors else 0
+        if hasattr(results, "errors"):
+            return 1 if results.errors else 0
+
+        has_errors = any(getattr(trial, "status", None) == "ERROR" for trial in getattr(results, "trials", []))
+        return 1 if has_errors else 0
     finally:
         ray.shutdown()
 

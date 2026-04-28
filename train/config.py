@@ -19,6 +19,7 @@ class TrainConfig:
     storage_root: str = "/mnt/ray/storage"
     storage_path: str | None = None
     restore_path: str | None = None
+    resume_from_checkpoint: str | None = None
     timestamp_experiment_name: bool = True
     num_samples: int = Field(default=1, ge=1)
     metric: str = "env_runners/episode_reward_mean"
@@ -84,6 +85,12 @@ class TrainConfig:
     aim_metrics: tuple[str, ...] | None = None
 
     def __post_init__(self):
+        if self.restore_path is not None and self.resume_from_checkpoint is not None:
+            raise ValueError("--restore and --resume-from-checkpoint are mutually exclusive")
+
+        if self.resume_from_checkpoint is not None and self.num_samples != 1:
+            raise ValueError("--resume-from-checkpoint only supports a single trial (num_samples=1)")
+
         if self.timestamp_experiment_name:
             time_suffix = datetime.now(tz=TIMEZONE).strftime("%Y%m%d_%H%M%S")
             self.experiment_name = f"{self.experiment_name}-{time_suffix}"
