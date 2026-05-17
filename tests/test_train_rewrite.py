@@ -229,7 +229,7 @@ def test_build_ppo_config_uses_new_api_stack_and_rlmodule() -> None:
     assert ppo_config.num_gpus_per_learner == cfg.num_gpus_per_learner
     assert ppo_config.model.get("custom_model") is None
     assert set(ppo_config.policies) == {DEFAULT_POLICY_ID}
-    assert ppo_config.policy_mapping_fn(1, None) == DEFAULT_POLICY_ID
+    assert ppo_config.policy_mapping_fn(1, None, None) == DEFAULT_POLICY_ID
     assert isinstance(ppo_config.rl_module_spec, MultiRLModuleSpec)
     assert ppo_config.rl_module_spec.rl_module_specs[DEFAULT_POLICY_ID].module_class is RCSSPPOTorchRLModule
     assert issubclass(ppo_config.callbacks_class, RCSSCallbacks)
@@ -288,6 +288,8 @@ def test_build_tune_config_and_run_config_without_aim() -> None:
     tune_config = build_tune_config(cfg)
     run_config = build_run_config(cfg)
 
+    assert cfg.metric == "checkpoint_score"
+    assert cfg.checkpoint_source_metric == "env_runners/episode_return_mean"
     assert tune_config.num_samples == 2
     assert tune_config.metric == cfg.metric
     assert run_config.name == "unit-train"
@@ -388,7 +390,21 @@ def test_callbacks_mirror_nested_checkpoint_metric_to_top_level() -> None:
 
     callbacks.on_train_result(algorithm=None, result=result)
 
+    assert cfg.checkpoint_source_metric is not None
     assert result[cfg.checkpoint_metric] == pytest.approx(12.5)
+    assert result[cfg.checkpoint_source_metric] == pytest.approx(12.5)
+
+
+def test_callbacks_emit_checkpoint_score_before_episode_metrics_exist() -> None:
+    cfg = build_train_config(parse_args(["--ray-address", "local", "--disable-aim"]))
+    callbacks = build_callbacks_class(cfg)()
+    result: dict[str, Any] = {"env_runners/num_env_steps_sampled": 1024.0}
+
+    callbacks.on_train_result(algorithm=None, result=result)
+
+    assert cfg.checkpoint_source_metric is not None
+    assert result[cfg.checkpoint_metric] == pytest.approx(0.0)
+    assert result[cfg.checkpoint_source_metric] == pytest.approx(0.0)
 
 
 def test_callbacks_aggregate_reward_breakdown_into_custom_metrics() -> None:

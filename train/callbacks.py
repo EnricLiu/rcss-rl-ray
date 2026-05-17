@@ -13,7 +13,13 @@ class RCSSCallbacks(RLlibCallback):
     REWARD_BREAKDOWN_TOTALS_KEY = "reward_breakdown_totals"
     REWARD_BREAKDOWN_STEPS_KEY = "reward_breakdown_steps"
     CHECKPOINT_SCORE_ATTRIBUTE = "checkpoint_score"
-    CHECKPOINT_SCORE_SOURCE_ATTRIBUTE = "env_runners/episode_reward_mean"
+    CHECKPOINT_SCORE_SOURCE_ATTRIBUTE = "env_runners/episode_return_mean"
+    CHECKPOINT_SCORE_FALLBACK_ATTRIBUTES = (
+        "env_runners/episode_return_mean",
+        "env_runners/episode_reward_mean",
+        "episode_return_mean",
+        "episode_reward_mean",
+    )
 
     @staticmethod
     def _lookup_metric(result: dict[str, Any], metric: str) -> Any:
@@ -33,6 +39,12 @@ class RCSSCallbacks(RLlibCallback):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _set_metric_if_missing(result: dict[str, Any], metric: str, value: float) -> None:
+        if metric in result:
+            return
+        result[metric] = value
 
     @staticmethod
     def _episode_data(episode: Any) -> dict[str, Any]:
@@ -84,10 +96,29 @@ class RCSSCallbacks(RLlibCallback):
         result: dict[str, Any],
         **kwargs: Any,
     ) -> None:
-        score = self._lookup_metric(result, self.CHECKPOINT_SCORE_SOURCE_ATTRIBUTE)
-        score_value = self._coerce_float(score)
-        if score_value is not None:
-            result[self.CHECKPOINT_SCORE_ATTRIBUTE] = score_value
+        score_value: float | None = None
+        for metric in (
+            self.CHECKPOINT_SCORE_SOURCE_ATTRIBUTE,
+            *self.CHECKPOINT_SCORE_FALLBACK_ATTRIBUTES,
+        ):
+            score = self._lookup_metric(result, metric)
+            score_value = self._coerce_float(score)
+            if score_value is not None:
+                break
+
+        final_score = score_value
+        if final_score is None:
+            # RLlib's new API stack may produce one or more initial training
+            # results before any episode has completed. Tune validates the
+            # configured metric on every result, so always expose finite scores.
+            final_score = 0.0
+
+        result[self.CHECKPOINT_SCORE_ATTRIBUTE] = final_score
+        self._set_metric_if_missing(
+            result,
+            self.CHECKPOINT_SCORE_SOURCE_ATTRIBUTE,
+            final_score,
+        )
 
     def on_episode_start(
         self,

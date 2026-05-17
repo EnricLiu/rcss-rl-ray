@@ -7,6 +7,7 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 TIMEZONE = timezone(timedelta(hours=+8))
+DEFAULT_CHECKPOINT_SOURCE_METRIC = "env_runners/episode_return_mean"
 
 @dataclass
 class TrainConfig:
@@ -22,7 +23,7 @@ class TrainConfig:
     resume_from_checkpoint: str | None = None
     timestamp_experiment_name: bool = True
     num_samples: int = Field(default=1, ge=1)
-    metric: str = "env_runners/episode_reward_mean"
+    metric: str = "checkpoint_score"
     checkpoint_metric: str = "checkpoint_score"
     checkpoint_source_metric: str | None = None
     mode: Literal["min", "max"] = "max"
@@ -98,7 +99,9 @@ class TrainConfig:
             time_suffix = datetime.now(tz=TIMEZONE).strftime("%Y%m%d_%H%M%S")
             self.experiment_name = f"{self.experiment_name}-{time_suffix}"
 
-        if self.checkpoint_source_metric is None:
+        if self.checkpoint_source_metric is None and self.metric == self.checkpoint_metric:
+            self.checkpoint_source_metric = DEFAULT_CHECKPOINT_SOURCE_METRIC
+        elif self.checkpoint_source_metric is None:
             self.checkpoint_source_metric = self.metric
 
         if self.enable_aim and self.aim_experiment_name is None:
