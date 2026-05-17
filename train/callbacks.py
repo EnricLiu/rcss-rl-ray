@@ -196,3 +196,34 @@ class RCSSCallbacks(RLlibCallback):
             scores.get("their", 0),
             sorted(reward_breakdown_totals.keys()),
         )
+
+from typing import Optional, Union, List
+from aim.sdk import Repo, Run
+from ray.tune.experiment import Trial
+from ray.tune.logger.aim import AimLoggerCallback
+
+class AimCallback(AimLoggerCallback):
+    def __init__(
+        self,
+        repo: Optional[Union[str, "Repo"]] = None,
+        experiment_name: Optional[str] = None,
+        metrics: Optional[List[str]] = None,
+        run_params: Optional[dict[str, Any]] = None,
+        **aim_run_kwargs,
+    ):
+        """
+        See help(AimLoggerCallback) for more information about parameters.
+        """
+        super().__init__(
+            repo=repo,
+            experiment_name=experiment_name,
+            metrics=metrics,
+            **aim_run_kwargs,
+        )
+        self._run_params = run_params or {}
+
+    def _create_run(self, trial: "Trial") -> Run:
+        run = super()._create_run(trial)
+        for key, value in self._run_params.items():
+            setattr(run, key, value)
+        return run

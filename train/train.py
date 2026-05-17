@@ -133,13 +133,14 @@ def build_tune_callbacks(train_cfg: TrainConfig) -> list[Any]:
     callbacks: list[Any] = []
     if train_cfg.enable_aim:
         try:
-            from ray.tune.logger.aim import AimLoggerCallback
-
+            from callbacks import AimCallback
+            from dataclasses import asdict
             callbacks.append(
-                AimLoggerCallback(
+                AimCallback(
                     repo=train_cfg.aim_repo,
                     experiment_name=train_cfg.aim_experiment_name or train_cfg.experiment_name,
                     metrics=list(train_cfg.aim_metrics) if train_cfg.aim_metrics else None,
+                    run_params=asdict(train_cfg)
                 )
             )
         except (AssertionError, ImportError) as exc:
