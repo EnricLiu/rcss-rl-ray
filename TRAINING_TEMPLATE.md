@@ -45,7 +45,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 │                  train/train.py (Entry Point)            │
 │  1. Parse CLI args → TrainConfig                         │
 │  2. Build ShootingCurriculum → EnvConfig                 │
-│  3. Register RCSSEnv + RCSSFCNet                         │
+│  3. Register RCSSEnv + RCSSPPOTorchRLModule              │
 │  4. Build PPOConfig and launch ray.tune.Tuner            │
 │  5. Attach AimLoggerCallback when enabled                │
 └──────────────┬───────────────────────────────────────────┘
@@ -64,7 +64,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
     │    RCSSEnv          │────▶│ AllocatorClient (REST)   │
     │  (MultiAgentEnv)    │     │ allocate / release rooms │
     │                     │     └─────────────────────────┘
-    │  obs  = 124-d float │     ┌─────────────────────────┐
+    │  obs  = 144-d float │     ┌─────────────────────────┐
     │  act  = hybrid      │────▶│ GameServicer (gRPC)     │
     │  rew  = goal-diff   │     │ send actions / recv obs  │
     └─────────────────────┘     └─────────────────────────┘
@@ -79,10 +79,10 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | **EnvConfig**       | `rcss_env/config.py`    | Env connection config (gRPC + allocator + curriculum) |
 | **RCSSEnv**         | `rcss_env/env.py`       | MultiAgentEnv: reset/step/close lifecycle         |
 | **ShootingCurriculum** | `train/curriculum/shooting/` | Builds room schema and reward for shooting tasks |
-| **RCSSFCNet**       | `train/models/fcnet.py` | Custom FC network: trunk -> policy head + value head |
+| **RCSSPPOTorchRLModule** | `train/models/fcnet.py` | PPO RLModule: FC trunk -> policy/value heads + discrete action mask |
 | **RCSSCallbacks**   | `train/callbacks.py`    | Episode metrics + mirrored top-level checkpoint score logging |
 | **Action**          | `rcss_env/action.py`    | Hybrid discrete+continuous -> protobuf mapping    |
-| **Observation**     | `rcss_env/obs.py`       | WorldModel -> 124-d normalised feature vector     |
+| **Observation**     | `rcss_env/obs.py`       | WorldModel -> 144-d normalised feature vector     |
 | **Reward**          | `rcss_env/reward.py`    | Goal-difference reward function                   |
 
 ## CLI Arguments Reference
@@ -112,7 +112,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 |----------|---------|-------------|
 | `--num-env-runners` | 2 | Parallel env-runner workers |
 | `--num-envs-per-runner` | 1 | Vectorised envs per runner |
-| `--train-batch-size` | 4000 | Transitions per PPO update |
+| `--train-batch-size` | 4000 | Transitions per learner PPO update |
 | `--sgd-minibatch-size` | 128 | PPO minibatch size |
 | `--num-sgd-iter` | 10 | PPO epochs per iteration |
 | `--lr` | 3e-4 | Learning rate |
@@ -171,7 +171,6 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 - `--restore` and `--resume-from-checkpoint` are different workflows and are mutually exclusive:
   - `--restore` resumes a **Tune experiment state** (unfinished/errored trials in that experiment).
   - `--resume-from-checkpoint` starts a **new Tune experiment** from a specific RLlib checkpoint directory such as `checkpoint_000099`.
-- The training path currently supports PPO and uses the legacy RLlib ModelV2 stack because `RCSSFCNet` extends `TorchModelV2`.
+- The training path currently supports PPO on RLlib's new API stack with a custom `DefaultPPOTorchRLModule` subclass for action masking.
 - Aim logging is enabled by default. The project declares `aim` for Python versions below 3.13 because Aim's native dependency is not available for CPython 3.13 from PyPI.
 - `ShootingReward.compute()` uses full-information `truth` world models where available, combining sparse score deltas, non-goal out-of-bounds penalty, ball-to-goal progress shaping, and a small cycle-based time decay.
-

@@ -11,7 +11,7 @@ flowchart TB
         direction TB
         Tune["Tune Tuner\n(single trial / future search)"]
         Curriculum["Curriculum Factory\n(ShootingCurriculum)"]
-        PPO["PPOConfig\ncustom model + action mask"]
+        PPO["PPOConfig\nRLModule + action mask"]
         Aim["AimLoggerCallback\n(optional AimStack metrics)"]
         Tune --> Curriculum --> PPO
         Tune -. metrics .-> Aim
@@ -34,7 +34,7 @@ flowchart TB
 
     subgraph ActionObs ["Action & Observation"]
         Action["Hybrid Action Space\n(catch / dash / kick /\nmove / tackle / turn)"]
-        Obs["Observation Extraction\n(124-dim feature vector)"]
+        Obs["Observation Extraction\n(144-dim feature vector)"]
         Reward["Reward Computation\n(goal-based ±1)"]
     end
 

@@ -3,13 +3,21 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
+import torch
 import pytest
+from ray.rllib.core.columns import Columns
+from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
 
+from rcss_env.action import Action
+from rcss_env.action_mask import ActionMaskResolver
 from train.callbacks import RCSSCallbacks
 from train.factory import build_env_config
+from train.models.fcnet import RCSSPPOTorchRLModule
 from train.train import (
+    DEFAULT_POLICY_ID,
     ENV_NAME,
     build_callbacks_class,
+    build_rl_module_spec,
     build_tune_run_kwargs,
     build_ppo_config,
     build_run_config,
@@ -195,7 +203,7 @@ def test_build_env_config_uses_shooting_curriculum() -> None:
     assert len(opponent_team.players) == 2
 
 
-def test_build_ppo_config_keeps_registered_env_and_legacy_model_stack() -> None:
+def test_build_ppo_config_uses_new_api_stack_and_rlmodule() -> None:
     cfg = build_train_config(parse_args(["--ray-address", "local", "--disable-aim"]))
     env_cfg = build_env_config(cfg)
 
@@ -204,12 +212,45 @@ def test_build_ppo_config_keeps_registered_env_and_legacy_model_stack() -> None:
     assert ppo_config.env == ENV_NAME
     assert ppo_config.env_config == {"env_config": env_cfg}
     assert ppo_config.disable_env_checking is True
-    assert ppo_config.enable_rl_module_and_learner is False
-    assert ppo_config.enable_env_runner_and_connector_v2 is False
-    assert ppo_config.model["custom_model"] == "rcss_fcnet"
+    assert ppo_config.enable_rl_module_and_learner is True
+    assert ppo_config.enable_env_runner_and_connector_v2 is True
+    assert ppo_config.train_batch_size_per_learner == cfg.train_batch_size
+    assert ppo_config.model.get("custom_model") is None
+    assert set(ppo_config.policies) == {DEFAULT_POLICY_ID}
+    assert ppo_config.policy_mapping_fn(1, None) == DEFAULT_POLICY_ID
+    assert isinstance(ppo_config.rl_module_spec, MultiRLModuleSpec)
+    assert ppo_config.rl_module_spec.rl_module_specs[DEFAULT_POLICY_ID].module_class is RCSSPPOTorchRLModule
     assert issubclass(ppo_config.callbacks_class, RCSSCallbacks)
     assert ppo_config.callbacks_class.CHECKPOINT_SCORE_ATTRIBUTE == cfg.checkpoint_metric
     assert ppo_config.callbacks_class.CHECKPOINT_SCORE_SOURCE_ATTRIBUTE == cfg.checkpoint_source_metric
+
+
+def test_rlmodule_applies_discrete_action_mask_only() -> None:
+    spec = build_rl_module_spec().rl_module_specs[DEFAULT_POLICY_ID]
+    module = spec.build()
+    obs_dim = spec.observation_space.shape[0]
+    batch = {
+        Columns.OBS: {
+            "obs": torch.zeros((2, obs_dim), dtype=torch.float32),
+            ActionMaskResolver.OBSERVATION_KEY: torch.tensor(
+                [
+                    [1, 0, 1, 1, 0],
+                    [0, 1, 1, 0, 1],
+                ],
+                dtype=torch.float32,
+            ),
+        }
+    }
+
+    output = module.forward_exploration(batch)
+    logits = output[Columns.ACTION_DIST_INPUTS]
+
+    assert logits.shape[-1] > Action.n_actions()
+    assert logits[0, 1] < -1.0e8
+    assert logits[0, 4] < -1.0e8
+    assert logits[1, 0] < -1.0e8
+    assert logits[1, 3] < -1.0e8
+    assert torch.all(logits[:, Action.n_actions():] > -1.0e8)
 
 
 def test_build_tune_config_and_run_config_without_aim() -> None:

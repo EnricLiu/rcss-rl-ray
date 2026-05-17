@@ -6,24 +6,30 @@ import argparse
 import logging
 from typing import Any, cast
 
+import numpy as np
+from gymnasium import spaces
 import ray
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
+from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
+from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 from ray.tune.registry import register_env
 
-from rcss_env.action_mask import ActionMaskResolver
+from rcss_env import obs as observation
+from rcss_env.action import Action
 from rcss_env.config import EnvConfig
 from rcss_env.env import RCSSEnv
 
 from train.callbacks import RCSSCallbacks
 from train.config import TrainConfig
 from train.factory import build_env_config
-from train.models.fcnet import register as register_model
+from train.models.fcnet import RCSSPPOTorchRLModule
 
 logger = logging.getLogger(__name__)
 
 ENV_NAME = "rcss_multi_agent"
-DEFAULT_POLICY_ID = "default_policy"
+DEFAULT_POLICY_ID = "rcss_policy"
 
 
 def default_policy_mapping_fn(
@@ -43,6 +49,28 @@ def build_callbacks_class(train_cfg: TrainConfig):
     return ConfiguredRCSSCallbacks
 
 
+def build_rl_module_spec() -> MultiRLModuleSpec:
+    module_spec = RLModuleSpec(
+        module_class=RCSSPPOTorchRLModule,
+        observation_space=spaces.Box(
+            low=np.full((observation.dim(),), -np.inf, dtype=np.float32),
+            high=np.full((observation.dim(),), np.inf, dtype=np.float32),
+            dtype=np.float32,
+        ),
+        action_space=Action.space_schema(),
+        model_config=DefaultModelConfig(
+            fcnet_hiddens=[256, 256],
+            fcnet_activation="relu",
+            vf_share_layers=True,
+        ),
+    )
+    return MultiRLModuleSpec(
+        rl_module_specs={
+            DEFAULT_POLICY_ID: module_spec,
+        }
+    )
+
+
 def build_ppo_config(
     train_cfg: TrainConfig,
     env_config: EnvConfig,
@@ -53,20 +81,18 @@ def build_ppo_config(
         return RCSSEnv(config=cfg["env_config"])
 
     register_env(ENV_NAME, _env_creator)
-    register_model()
 
     callbacks_class = build_callbacks_class(train_cfg)
 
     config = (
         PPOConfig()
         .api_stack(
-            enable_rl_module_and_learner=False,
-            enable_env_runner_and_connector_v2=False,
+            enable_rl_module_and_learner=True,
+            enable_env_runner_and_connector_v2=True,
         )
         .environment(
             env=ENV_NAME,
             env_config={"env_config": env_config},
-            action_mask_key=ActionMaskResolver.OBSERVATION_KEY,
             disable_env_checking=True,
         )
         .env_runners(
@@ -74,26 +100,19 @@ def build_ppo_config(
             num_envs_per_env_runner=train_cfg.num_envs_per_runner,
             num_cpus_per_env_runner=cast(Any, train_cfg.num_cpus_per_runner),
             num_gpus_per_env_runner=0,
-
         )
         .training(
-            train_batch_size=train_cfg.train_batch_size,
+            train_batch_size_per_learner=train_cfg.train_batch_size,
             minibatch_size=train_cfg.sgd_minibatch_size,
             num_epochs=train_cfg.num_sgd_iter,
             lr=train_cfg.lr,
             lambda_=0.95,
             vf_clip_param=50.0,
-            vf_share_layers=False,
             gamma=train_cfg.gamma,
             entropy_coeff=train_cfg.entropy_coeff,
             clip_param=train_cfg.clip_param,
-            model={
-                "custom_model": "rcss_fcnet",
-                "custom_model_config": {
-                    "hidden_sizes": [256, 256],
-                },
-            },
         )
+        .rl_module(rl_module_spec=build_rl_module_spec())
         .callbacks(callbacks_class)
         .framework("torch")
         .multi_agent(

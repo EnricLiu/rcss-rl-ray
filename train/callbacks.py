@@ -4,12 +4,12 @@ import logging
 from numbers import Number
 from typing import Any, cast
 
-from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.rllib.callbacks.callbacks import RLlibCallback
 
 logger = logging.getLogger(__name__)
 
 
-class RCSSCallbacks(DefaultCallbacks):
+class RCSSCallbacks(RLlibCallback):
     REWARD_BREAKDOWN_TOTALS_KEY = "reward_breakdown_totals"
     REWARD_BREAKDOWN_STEPS_KEY = "reward_breakdown_steps"
     CHECKPOINT_SCORE_ATTRIBUTE = "checkpoint_score"
@@ -34,6 +34,49 @@ class RCSSCallbacks(DefaultCallbacks):
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _episode_data(episode: Any) -> dict[str, Any]:
+        if hasattr(episode, "user_data"):
+            return cast(dict[str, Any], episode.user_data)
+        return cast(dict[str, Any], episode.custom_data)
+
+    @staticmethod
+    def _latest_infos(episode: Any) -> list[dict[str, Any]]:
+        if hasattr(episode, "get_agents") and hasattr(episode, "last_info_for"):
+            return [
+                info
+                for agent_id in episode.get_agents()
+                if (info := episode.last_info_for(agent_id))
+            ]
+
+        infos = episode.get_infos(indices=-1)
+        if isinstance(infos, dict):
+            return [
+                info
+                for info in infos.values()
+                if isinstance(info, dict)
+            ]
+        return []
+
+    @classmethod
+    def _record_metric(
+        cls,
+        episode: Any,
+        metrics_logger: Any | None,
+        key: str,
+        value: float,
+    ) -> None:
+        if hasattr(episode, "custom_metrics"):
+            episode.custom_metrics[key] = value
+        if metrics_logger is not None:
+            metrics_logger.log_value(("custom_metrics", key), value)
+
+    @staticmethod
+    def _episode_length(episode: Any) -> int | float:
+        if hasattr(episode, "length"):
+            return episode.length
+        return getattr(episode, "env_steps", 0)
+
     def on_train_result(
         self,
         *,
@@ -52,8 +95,9 @@ class RCSSCallbacks(DefaultCallbacks):
         episode: Any,
         **kwargs: Any,
     ) -> None:
-        episode.user_data[self.REWARD_BREAKDOWN_TOTALS_KEY] = {}
-        episode.user_data[self.REWARD_BREAKDOWN_STEPS_KEY] = 0
+        data = self._episode_data(episode)
+        data[self.REWARD_BREAKDOWN_TOTALS_KEY] = {}
+        data[self.REWARD_BREAKDOWN_STEPS_KEY] = 0
 
     def on_episode_step(
         self,
@@ -62,8 +106,7 @@ class RCSSCallbacks(DefaultCallbacks):
         **kwargs: Any,
     ) -> None:
         breakdown: dict[str, Any] | None = None
-        for agent_id in episode.get_agents():
-            info = episode.last_info_for(agent_id)
+        for info in self._latest_infos(episode):
             if info and "reward_breakdown" in info:
                 breakdown = info["reward_breakdown"]
                 break
@@ -71,7 +114,8 @@ class RCSSCallbacks(DefaultCallbacks):
         if not breakdown:
             return
 
-        totals: dict[str, float] = episode.user_data.setdefault(
+        data = self._episode_data(episode)
+        totals: dict[str, float] = data.setdefault(
             self.REWARD_BREAKDOWN_TOTALS_KEY, {}
         )
         for key, value in breakdown.items():
@@ -82,20 +126,20 @@ class RCSSCallbacks(DefaultCallbacks):
             if numeric_value is None:
                 continue
             totals[key] = current_total + numeric_value
-        episode.user_data[self.REWARD_BREAKDOWN_STEPS_KEY] = int(
-            episode.user_data.get(self.REWARD_BREAKDOWN_STEPS_KEY, 0)
+        data[self.REWARD_BREAKDOWN_STEPS_KEY] = int(
+            data.get(self.REWARD_BREAKDOWN_STEPS_KEY, 0)
         ) + 1
 
     def on_episode_end(
         self,
         *,
         episode: Any,
+        metrics_logger: Any | None = None,
         **kwargs: Any,
     ) -> None:
 
         last_info: dict[str, Any] = {}
-        for agent_id in episode.get_agents():
-            info = episode.last_info_for(agent_id)
+        for info in self._latest_infos(episode):
             if info and "scores" in info:
                 last_info = info
                 break
@@ -103,25 +147,51 @@ class RCSSCallbacks(DefaultCallbacks):
         scores = last_info.get("scores", {"our": 0, "their": 0})
         our_score = self._coerce_float(scores.get("our", 0))
         their_score = self._coerce_float(scores.get("their", 0))
-        episode.custom_metrics["episode_our_score"] = 0.0 if our_score is None else our_score
-        episode.custom_metrics["episode_their_score"] = 0.0 if their_score is None else their_score
-        step_value = last_info.get("step", episode.length)
-        episode.custom_metrics["episode_steps"] = self._coerce_float(
-            episode.length if step_value is None else step_value
-        ) or 0.0
+        self._record_metric(
+            episode,
+            metrics_logger,
+            "episode_our_score",
+            0.0 if our_score is None else our_score,
+        )
+        self._record_metric(
+            episode,
+            metrics_logger,
+            "episode_their_score",
+            0.0 if their_score is None else their_score,
+        )
+        step_value = last_info.get("step", self._episode_length(episode))
+        self._record_metric(
+            episode,
+            metrics_logger,
+            "episode_steps",
+            self._coerce_float(
+                self._episode_length(episode) if step_value is None else step_value
+            ) or 0.0,
+        )
 
-        reward_breakdown_totals = episode.user_data.get(self.REWARD_BREAKDOWN_TOTALS_KEY, {})
-        reward_breakdown_steps = int(episode.user_data.get(self.REWARD_BREAKDOWN_STEPS_KEY, 0))
+        data = self._episode_data(episode)
+        reward_breakdown_totals = data.get(self.REWARD_BREAKDOWN_TOTALS_KEY, {})
+        reward_breakdown_steps = int(data.get(self.REWARD_BREAKDOWN_STEPS_KEY, 0))
         for key, total in reward_breakdown_totals.items():
             metric_base = f"reward_{key}"
             total_value = float(total)
-            episode.custom_metrics[f"{metric_base}_total"] = total_value
+            self._record_metric(
+                episode,
+                metrics_logger,
+                f"{metric_base}_total",
+                total_value,
+            )
             if reward_breakdown_steps > 0:
-                episode.custom_metrics[f"{metric_base}_per_step"] = total_value / reward_breakdown_steps
+                self._record_metric(
+                    episode,
+                    metrics_logger,
+                    f"{metric_base}_per_step",
+                    total_value / reward_breakdown_steps,
+                )
 
         logger.debug(
             "Episode finished | steps=%d | our=%d | their=%d | reward_metrics=%s",
-            episode.length,
+            self._episode_length(episode),
             scores.get("our", 0),
             scores.get("their", 0),
             sorted(reward_breakdown_totals.keys()),
