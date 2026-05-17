@@ -55,7 +55,7 @@ class TrainConfig:
 
     # Curriculum selection and shooting curriculum parameters
     curriculum: Literal["shooting"] = "shooting"
-    curriculum_debug: bool = True
+    curriculum_debug: bool = False
     agent_unum: int = Field(default=2, ge=1, le=11)
     team_side: Literal["left", "right", "rand"] = "left"
     our_player_num: int = Field(default=2, ge=1, le=11)
