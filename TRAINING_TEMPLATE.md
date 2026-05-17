@@ -16,6 +16,8 @@ python -m train.train \
     --our-player-num 2 \
     --oppo-player-num 2 \
     --num-env-runners 4 \
+    --num-learners 2 \
+    --num-cpus-per-learner 1 \
     --train-batch-size 8000 \
     --sgd-minibatch-size 256 \
     --num-sgd-iter 15 \
@@ -112,6 +114,9 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 |----------|---------|-------------|
 | `--num-env-runners` | 2 | Parallel env-runner workers |
 | `--num-envs-per-runner` | 1 | Vectorised envs per runner |
+| `--num-learners` | 0 | Learner workers; `0` uses a local learner in the main process |
+| `--num-cpus-per-learner` | `auto` | CPU resources per learner worker |
+| `--num-gpus-per-learner` | 0.0 | GPU resources per learner worker |
 | `--train-batch-size` | 4000 | Transitions per learner PPO update |
 | `--sgd-minibatch-size` | 128 | PPO minibatch size |
 | `--num-sgd-iter` | 10 | PPO epochs per iteration |

@@ -32,6 +32,9 @@ class TrainConfig:
     num_env_runners: int = Field(default=4, ge=0)
     num_envs_per_runner: int = Field(default=1, ge=1)
     num_cpus_per_runner: float = Field(default=0.4, ge=0.0)
+    num_learners: int = Field(default=0, ge=0)
+    num_cpus_per_learner: float | Literal["auto"] = "auto"
+    num_gpus_per_learner: float = Field(default=0.0, ge=0.0)
     train_batch_size: int = Field(default=4000, ge=1)
     sgd_minibatch_size: int = Field(default=128, ge=1)
     num_sgd_iter: int = Field(default=10, ge=1)

@@ -101,6 +101,11 @@ def build_ppo_config(
             num_cpus_per_env_runner=cast(Any, train_cfg.num_cpus_per_runner),
             num_gpus_per_env_runner=0,
         )
+        .learners(
+            num_learners=train_cfg.num_learners,
+            num_cpus_per_learner=cast(Any, train_cfg.num_cpus_per_learner),
+            num_gpus_per_learner=train_cfg.num_gpus_per_learner,
+        )
         .training(
             train_batch_size_per_learner=train_cfg.train_batch_size,
             minibatch_size=train_cfg.sgd_minibatch_size,
@@ -246,6 +251,12 @@ def _optional_int(value: str) -> int | None:
     return int(value)
 
 
+def _float_or_auto(value: str) -> float | Literal["auto"]:
+    if value.lower() == "auto":
+        return "auto"
+    return float(value)
+
+
 def _csv_tuple(value: str | None) -> tuple[str, ...] | None:
     if value is None:
         return None
@@ -283,6 +294,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-env-runners", type=int, default=defaults.num_env_runners)
     parser.add_argument("--num-envs-per-runner", type=int, default=defaults.num_envs_per_runner)
     parser.add_argument("--num-cpus-per-runner", type=float, default=defaults.num_cpus_per_runner)
+    parser.add_argument("--num-learners", type=int, default=defaults.num_learners)
+    parser.add_argument("--num-cpus-per-learner", type=_float_or_auto, default=defaults.num_cpus_per_learner)
+    parser.add_argument("--num-gpus-per-learner", type=float, default=defaults.num_gpus_per_learner)
     parser.add_argument("--train-batch-size", type=int, default=defaults.train_batch_size)
     parser.add_argument("--sgd-minibatch-size", type=int, default=defaults.sgd_minibatch_size)
     parser.add_argument("--num-sgd-iter", type=int, default=defaults.num_sgd_iter)
@@ -361,6 +375,10 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
         log_to_file=args.log_to_file,
         num_env_runners=args.num_env_runners,
         num_envs_per_runner=args.num_envs_per_runner,
+        num_cpus_per_runner=args.num_cpus_per_runner,
+        num_learners=args.num_learners,
+        num_cpus_per_learner=args.num_cpus_per_learner,
+        num_gpus_per_learner=args.num_gpus_per_learner,
         train_batch_size=args.train_batch_size,
         sgd_minibatch_size=args.sgd_minibatch_size,
         num_sgd_iter=args.num_sgd_iter,

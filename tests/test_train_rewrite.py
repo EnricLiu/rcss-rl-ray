@@ -54,6 +54,12 @@ def test_build_train_config_parses_tune_and_aim_flags() -> None:
             "env_runners/episode_reward_mean,custom_metrics/episode_steps_mean",
             "--num-iterations",
             "7",
+            "--num-learners",
+            "2",
+            "--num-cpus-per-learner",
+            "1.5",
+            "--num-gpus-per-learner",
+            "0.25",
             "--our-goalie-unum",
             "none",
             "--goal-r",
@@ -70,6 +76,9 @@ def test_build_train_config_parses_tune_and_aim_flags() -> None:
         "custom_metrics/episode_steps_mean",
     )
     assert cfg.num_iterations == 7
+    assert cfg.num_learners == 2
+    assert cfg.num_cpus_per_learner == 1.5
+    assert cfg.num_gpus_per_learner == 0.25
     assert cfg.our_goalie_unum is None
     assert cfg.goal_r is None
 
@@ -215,6 +224,9 @@ def test_build_ppo_config_uses_new_api_stack_and_rlmodule() -> None:
     assert ppo_config.enable_rl_module_and_learner is True
     assert ppo_config.enable_env_runner_and_connector_v2 is True
     assert ppo_config.train_batch_size_per_learner == cfg.train_batch_size
+    assert ppo_config.num_learners == cfg.num_learners
+    assert ppo_config.num_cpus_per_learner == cfg.num_cpus_per_learner
+    assert ppo_config.num_gpus_per_learner == cfg.num_gpus_per_learner
     assert ppo_config.model.get("custom_model") is None
     assert set(ppo_config.policies) == {DEFAULT_POLICY_ID}
     assert ppo_config.policy_mapping_fn(1, None) == DEFAULT_POLICY_ID
