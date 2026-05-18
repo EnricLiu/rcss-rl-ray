@@ -70,7 +70,10 @@ class RCSSEnv(MultiAgentEnv):
 
         # Sorted list of agent ids (by unum)
         self.agents = list(sorted(self.agent_team_unums))
+        self.possible_agents = self.agents.copy()
 
+        self.observation_space = _obs_space
+        self.action_space = _act_space
         self.observation_spaces = {unum: _obs_space for unum in self.agents}
         self.action_spaces = {unum: _act_space for unum in self.agents}
 
