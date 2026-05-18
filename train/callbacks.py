@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from numbers import Number
-from typing import Any, cast
+from typing import Any, Optional, Union, cast
 
+from aim.sdk import Repo, Run
 from ray.rllib.callbacks.callbacks import RLlibCallback
+from ray.tune.experiment import Trial
+from ray.tune.logger.aim import AimLoggerCallback
 
 logger = logging.getLogger(__name__)
 
@@ -228,17 +232,13 @@ class RCSSCallbacks(RLlibCallback):
             sorted(reward_breakdown_totals.keys()),
         )
 
-from typing import Optional, Union, List
-from aim.sdk import Repo, Run
-from ray.tune.experiment import Trial
-from ray.tune.logger.aim import AimLoggerCallback
 
 class AimCallback(AimLoggerCallback):
     def __init__(
         self,
         repo: Optional[Union[str, "Repo"]] = None,
         experiment_name: Optional[str] = None,
-        metrics: Optional[List[str]] = None,
+        metrics: Optional[list[str]] = None,
         run_params: Optional[dict[str, Any]] = None,
         **aim_run_kwargs,
     ):
@@ -253,8 +253,30 @@ class AimCallback(AimLoggerCallback):
         )
         self._run_params = run_params or {}
 
+    @classmethod
+    def _sanitize_run_param(cls, value: Any) -> Any:
+        if isinstance(value, (str, bool, int, float, type(None))):
+            return value
+        if isinstance(value, Mapping):
+            return {
+                str(key): cls._sanitize_run_param(nested_value)
+                for key, nested_value in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._sanitize_run_param(item) for item in value]
+        if hasattr(value, "item"):
+            try:
+                return cls._sanitize_run_param(value.item())
+            except (TypeError, ValueError):
+                pass
+        return str(value)
+
     def _create_run(self, trial: "Trial") -> Run:
         run = super()._create_run(trial)
         for key, value in self._run_params.items():
-            setattr(run, key, value)
+            # Aim stores Run Params through Run.__setitem__ (for example,
+            # Ray's own AimLoggerCallback uses run["trial_id"] = ...).
+            # setattr(run, key, value) only mutates the Python object and is
+            # not persisted or displayed in Aim's Run Params UI.
+            run[str(key)] = self._sanitize_run_param(value)
         return run

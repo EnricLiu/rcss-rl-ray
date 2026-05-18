@@ -133,14 +133,15 @@ def build_tune_callbacks(train_cfg: TrainConfig) -> list[Any]:
     callbacks: list[Any] = []
     if train_cfg.enable_aim:
         try:
-            from callbacks import AimCallback
             from dataclasses import asdict
+            from train.callbacks import AimCallback
+
             callbacks.append(
                 AimCallback(
                     repo=train_cfg.aim_repo,
                     experiment_name=train_cfg.aim_experiment_name or train_cfg.experiment_name,
                     metrics=list(train_cfg.aim_metrics) if train_cfg.aim_metrics else None,
-                    run_params=asdict(train_cfg)
+                    run_params=asdict(cast(Any, train_cfg)),
                 )
             )
         except (AssertionError, ImportError) as exc:
@@ -252,7 +253,7 @@ def _optional_int(value: str) -> int | None:
     return int(value)
 
 
-def _float_or_auto(value: str) -> float | Literal["auto"]:
+def _float_or_auto(value: str) -> float | str:
     if value.lower() == "auto":
         return "auto"
     return float(value)
