@@ -96,7 +96,7 @@ def _build_schema() -> GameServerSchema:
                     PlayerSchema(
                         unum=1,
                         policy=SspAgentPolicy(
-                            image="Cyrus2D/SoccerSimulationProxy",
+                            image="CLSFramework/soccer-simulation-proxy",
                             grpc_host=IPv4Address("127.0.0.1"),
                             grpc_port=50051,
                         ),
@@ -104,7 +104,7 @@ def _build_schema() -> GameServerSchema:
                     PlayerSchema(
                         unum=2,
                         policy=SspAgentPolicy(
-                            image="Cyrus2D/SoccerSimulationProxy",
+                            image="CLSFramework/soccer-simulation-proxy",
                             grpc_host=IPv4Address("127.0.0.1"),
                             grpc_port=50051,
                         ),

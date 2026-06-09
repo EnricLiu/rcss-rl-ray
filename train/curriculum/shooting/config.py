@@ -1,6 +1,7 @@
 from typing import Literal, Any, Optional
 
 from pydantic import BaseModel, Field
+from schema.policy import DEFAULT_SSP_AGENT_IMAGE
 from utils.config import ServerConfig
 
 from ..utils import Region
@@ -28,7 +29,7 @@ class ShootingCurriculumConfig(BaseModel):
     agent_region: Region = Field(default_factory=lambda: Region.from_range(x=(-20, 30), y=(-30, 30)))
     ball_region: Region = Field(default_factory=lambda: Region.from_range(x=(-20, 40), y=(-34, 34)))
 
-    player_agent_image: str = "Cyrus2D/SoccerSimulationProxy"
+    player_agent_image: str = DEFAULT_SSP_AGENT_IMAGE
     player_bot_image: str = "HELIOS/helios-base"
 
     # ---- Sparse / event-based ----

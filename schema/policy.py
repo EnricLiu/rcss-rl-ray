@@ -9,6 +9,17 @@ from pydantic import Field, IPvAnyAddress, field_validator
 from ._base import SchemaModel
 
 
+DEFAULT_SSP_AGENT_IMAGE = "CLSFramework/soccer-simulation-proxy"
+DEFAULT_BOT_IMAGE = "HELIOS/helios-base"
+
+
+def _valid_image_segment(segment: str) -> bool:
+    return bool(segment) and all(
+        ("A" <= char <= "Z") or ("a" <= char <= "z") or ("0" <= char <= "9") or char == "-"
+        for char in segment
+    )
+
+
 class PolicyKind(str, Enum):
     """Top-level policy kind: Bot (scripted) or Agent (RL-trained)."""
     Bot = "bot"
@@ -21,8 +32,15 @@ class PolicyAgentKind(str, Enum):
 
 
 def _validate_policy_image(image: str) -> str:
-    if image != "*" and "/" not in image:
-        raise ValueError(r"Invalid policy name, should be in pattern /^\w+/(\w+|\*):?\w*?$/")
+    parts = image.split("/")
+    if (
+        len(parts) != 2
+        or not _valid_image_segment(parts[0])
+        or not _valid_image_segment(parts[1])
+    ):
+        raise ValueError(
+            "Invalid policy image, expected provider/model where each segment matches [A-Za-z0-9-]+"
+        )
     return image
 
 
@@ -43,7 +61,20 @@ class Policy(SchemaModel):
 
     @staticmethod
     def helios_base() -> BotPolicy:
-        return BotPolicy(image="HELIOS/helios-base")
+        return BotPolicy(image=DEFAULT_BOT_IMAGE)
+
+    @staticmethod
+    def ssp_agent(
+        *,
+        grpc_host: IPvAnyAddress | IPv4Address,
+        grpc_port: int,
+        image: str = DEFAULT_SSP_AGENT_IMAGE,
+    ) -> SspAgentPolicy:
+        return SspAgentPolicy(
+            image=image,
+            grpc_host=grpc_host,
+            grpc_port=grpc_port,
+        )
 
     @staticmethod
     def parse(maybe_policy: dict[str, Any] | Policy) -> BotPolicy | SspAgentPolicy:

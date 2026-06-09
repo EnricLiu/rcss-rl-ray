@@ -5,6 +5,7 @@ from typing import Literal
 
 from client.base.allocator.config import AllocatorConfig
 from rcss_env.config import EnvConfig
+from schema.policy import DEFAULT_SSP_AGENT_IMAGE
 from utils.config import ServerConfig
 
 from .config import TrainConfig
@@ -78,7 +79,7 @@ def make_shooting_env_config(
     agent_unum: int = 1,
     team_side: Literal["left", "right", "rand"] = "left",
     time_up: int = 5000,
-    player_agent_image: str = "Cyrus2D/SoccerSimulationProxy",
+    player_agent_image: str = DEFAULT_SSP_AGENT_IMAGE,
     player_bot_image: str = "HELIOS/helios-base",
     our_goalie_unum: int | None = 1,
     oppo_goalie_unum: int | None = 1,

@@ -10,6 +10,7 @@ from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
 
 from rcss_env.action import Action
 from rcss_env.action_mask import ActionMaskResolver
+from schema import DEFAULT_SSP_AGENT_IMAGE, Policy
 from train.callbacks import AimCallback, RCSSCallbacks
 from train.factory import build_env_config
 from train.models.fcnet import RCSSPPOTorchRLModule
@@ -210,6 +211,52 @@ def test_build_env_config_uses_shooting_curriculum() -> None:
     assert schema.stopping.time_up == 321
     assert len(schema.teams.agent_team.players) == 3
     assert len(opponent_team.players) == 2
+
+
+def test_shooting_schema_uses_allocator_ssp_agent_payload_for_cls_ssp() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--grpc-host",
+                "127.0.0.1",
+                "--grpc-port",
+                "43123",
+                "--agent-unum",
+                "1",
+                "--our-player-num",
+                "1",
+                "--oppo-player-num",
+                "1",
+            ]
+        )
+    )
+
+    schema = build_env_config(cfg).curriculum.make_schema()
+    payload = schema.model_dump(mode="json")
+    agent_policy = payload["teams"]["left"]["players"][0]["policy"]
+    coach_policy = payload["teams"]["left"]["coach"]["policy"]
+
+    expected_policy = {
+        "kind": "agent",
+        "image": DEFAULT_SSP_AGENT_IMAGE,
+        "agent": "ssp",
+        "grpc_host": "127.0.0.1",
+        "grpc_port": 43123,
+    }
+    assert agent_policy == expected_policy
+    assert coach_policy == expected_policy
+
+
+def test_policy_image_validation_matches_allocator_image_declaration() -> None:
+    assert Policy.helios_base().image == "HELIOS/helios-base"
+    assert Policy.ssp_agent(grpc_host="127.0.0.1", grpc_port=43123).image == DEFAULT_SSP_AGENT_IMAGE
+
+    for image in ("*", "CLSFramework/soccer.simulation.proxy", "CLS_Framework/soccer-simulation-proxy"):
+        with pytest.raises(ValueError, match="provider/model"):
+            Policy.ssp_agent(grpc_host="127.0.0.1", grpc_port=43123, image=image)
 
 
 def test_build_ppo_config_uses_new_api_stack_and_rlmodule() -> None:

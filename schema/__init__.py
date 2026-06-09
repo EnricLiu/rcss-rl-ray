@@ -2,7 +2,16 @@
 
 from .team import TeamsSchema, TeamSchema, TeamSide
 from .player import PlayerSchema, PlayerInitState, PlayerActionList
-from .policy import Policy, PolicyKind, PolicyAgentKind, BotPolicy, AgentPolicy, SspAgentPolicy
+from .policy import (
+    DEFAULT_BOT_IMAGE,
+    DEFAULT_SSP_AGENT_IMAGE,
+    Policy,
+    PolicyKind,
+    PolicyAgentKind,
+    BotPolicy,
+    AgentPolicy,
+    SspAgentPolicy,
+)
 from .referee import RefereeSchema
 from .position import Position
 from .stopping import StoppingEvents

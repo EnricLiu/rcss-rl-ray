@@ -149,7 +149,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | `--oppo-goalie-unum` | 1 | Opponent goalie unum; pass `none` to disable |
 | `--our-team-name` | `nexus-prime` | Learning-team name |
 | `--oppo-team-name` | `bot` | Opponent-team name |
-| `--agent-image` | `Cyrus2D/SoccerSimulationProxy` | Agent player image |
+| `--agent-image` | `CLSFramework/soccer-simulation-proxy` | Agent player image |
 | `--bot-image` | `HELIOS/helios-base` | Bot player image |
 | `--time-up` | 5000 | Episode time limit |
 | `--goal-l` | 1 | Stop after left-side goals; pass `none` to disable |

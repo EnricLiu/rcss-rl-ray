@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field
 from pydantic.dataclasses import dataclass
+from schema.policy import DEFAULT_SSP_AGENT_IMAGE
 
 TIMEZONE = timezone(timedelta(hours=+8))
 DEFAULT_CHECKPOINT_SOURCE_METRIC = "env_runners/episode_return_mean"
@@ -65,7 +66,7 @@ class TrainConfig:
     oppo_goalie_unum: int | None = Field(default=1, ge=1, le=11)
     our_team_name: str = "nexus-prime"
     oppo_team_name: str = "bot"
-    player_agent_image: str = "Cyrus2D/SoccerSimulationProxy"
+    player_agent_image: str = DEFAULT_SSP_AGENT_IMAGE
     player_bot_image: str = "HELIOS/helios-base"
     time_up: int = Field(default=5000, ge=0, le=65535)
     goal_l: int | None = Field(default=1, ge=0, le=255)

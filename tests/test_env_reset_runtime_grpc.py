@@ -95,7 +95,7 @@ class StaticCurriculum(CurriculumMixin):
                         PlayerSchema(
                             unum=1,
                             policy=SspAgentPolicy(
-                                image="Cyrus2D/SoccerSimulationProxy",
+                                image="CLSFramework/soccer-simulation-proxy",
                                 grpc_host=grpc_server.host,
                                 grpc_port=grpc_server.port,
                             ),
@@ -103,7 +103,7 @@ class StaticCurriculum(CurriculumMixin):
                         PlayerSchema(
                             unum=2,
                             policy=SspAgentPolicy(
-                                image="Cyrus2D/SoccerSimulationProxy",
+                                image="CLSFramework/soccer-simulation-proxy",
                                 grpc_host=grpc_server.host,
                                 grpc_port=grpc_server.port,
                             ),

@@ -3,7 +3,7 @@ from typing import override
 
 from rcss_env.reward import RewardFnMixin
 from schema import GameServerSchema, TeamSchema, TeamsSchema, StoppingEvents, RefereeSchema, RoomInitState, Position, \
-    TeamSide, PlayerSchema, PlayerInitState, SspAgentPolicy, BotPolicy
+    TeamSide, PlayerSchema, PlayerInitState, Policy, BotPolicy
 from schema.coach import CoachSchema
 from ..mixin import CurriculumMixin
 
@@ -48,7 +48,7 @@ class ShootingCurriculum(CurriculumMixin):
         coach = None
         if is_agent:
             coach = CoachSchema(
-                policy=SspAgentPolicy(
+                policy=Policy.ssp_agent(
                     image=self.config.player_agent_image,
                     grpc_host=self.config.grpc_server.host,
                     grpc_port=self.config.grpc_server.port,
@@ -70,7 +70,7 @@ class ShootingCurriculum(CurriculumMixin):
         ret = PlayerSchema(
             unum=unum,
             goalie=is_goalie,
-            policy=SspAgentPolicy(
+            policy=Policy.ssp_agent(
                 image=self.config.player_agent_image,
                 grpc_host=self.config.grpc_server.host,
                 grpc_port=self.config.grpc_server.port,
