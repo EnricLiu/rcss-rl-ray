@@ -10,7 +10,7 @@ from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
 
 from rcss_env.action import Action
 from rcss_env.action_mask import ActionMaskResolver
-from train.callbacks import RCSSCallbacks
+from train.callbacks import AimCallback, RCSSCallbacks
 from train.factory import build_env_config
 from train.models.fcnet import RCSSPPOTorchRLModule
 from train.train import (
@@ -297,6 +297,68 @@ def test_build_tune_config_and_run_config_without_aim() -> None:
     assert run_config.callbacks == []
     assert run_config.checkpoint_config.checkpoint_frequency == 0
     assert run_config.checkpoint_config.checkpoint_score_attribute == cfg.checkpoint_metric
+
+
+def test_build_tune_callbacks_passes_train_config_to_aim() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--no-timestamp-experiment-name",
+                "--experiment-name",
+                "unit-train",
+                "--lr",
+                "0.00005",
+                "--aim-metrics",
+                "checkpoint_score,learners/rcss_policy/total_loss",
+            ]
+        )
+    )
+
+    callbacks = build_tune_callbacks(cfg)
+
+    assert len(callbacks) == 1
+    assert isinstance(callbacks[0], AimCallback)
+    assert callbacks[0]._run_params["experiment_name"] == "unit-train"
+    assert callbacks[0]._run_params["lr"] == pytest.approx(0.00005)
+    assert callbacks[0]._run_params["aim_metrics"] == (
+        "checkpoint_score",
+        "learners/rcss_policy/total_loss",
+    )
+
+
+def test_aim_callback_writes_run_params_through_aim_item_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ray.tune.logger.aim import AimLoggerCallback
+
+    fake_run: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        AimLoggerCallback,
+        "_create_run",
+        lambda self, trial: fake_run,
+    )
+
+    callback = AimCallback(
+        repo="/tmp/aim",
+        run_params={
+            "lr": 5e-5,
+            "aim_metrics": ("checkpoint_score", "learners/rcss_policy/total_loss"),
+            "nested": {"enabled": True, "items": (1, 2)},
+        },
+    )
+
+    run = callback._create_run(cast(Any, SimpleNamespace()))
+
+    assert run is fake_run
+    assert fake_run["lr"] == pytest.approx(5e-5)
+    assert fake_run["aim_metrics"] == [
+        "checkpoint_score",
+        "learners/rcss_policy/total_loss",
+    ]
+    assert fake_run["nested"] == {"enabled": True, "items": [1, 2]}
 
 
 def test_build_tune_run_kwargs_matches_run_and_tune_config() -> None:

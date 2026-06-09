@@ -86,6 +86,6 @@ class DummyRewardFn(RewardFnMixin):
         return rewards
 
 
-def distance(pos1: pb2.Vector2D, pos2: pb2.Vector2D) -> float:
-    """Compute the Euclidean distance between two Vector2D points."""
+def distance(pos1: pb2.RpcVector2D, pos2: pb2.RpcVector2D) -> float:
+    """Compute the Euclidean distance between two RpcVector2D points."""
     return ((pos1.x - pos2.x) ** 2 + (pos1.y - pos2.y) ** 2) ** 0.5

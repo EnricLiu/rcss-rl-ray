@@ -9,8 +9,8 @@ from rcss_env.grpc_srv.proto import pb2
 def _world_model() -> pb2.WorldModel:
     return pb2.WorldModel(
         self=pb2.Self(
-            position=pb2.Vector2D(x=10.0, y=-5.0),
-            velocity=pb2.Vector2D(x=1.2, y=-0.5),
+            position=pb2.RpcVector2D(x=10.0, y=-5.0),
+            velocity=pb2.RpcVector2D(x=1.2, y=-0.5),
             side=pb2.RIGHT,
             is_goalie=False,
             body_direction=90.0,
@@ -28,9 +28,9 @@ def _world_model() -> pb2.WorldModel:
             kick_rate=0.8,
         ),
         ball=pb2.Ball(
-            position=pb2.Vector2D(x=20.0, y=3.0),
-            relative_position=pb2.Vector2D(x=10.0, y=8.0),
-            velocity=pb2.Vector2D(x=2.0, y=-1.0),
+            position=pb2.RpcVector2D(x=20.0, y=3.0),
+            relative_position=pb2.RpcVector2D(x=10.0, y=8.0),
+            velocity=pb2.RpcVector2D(x=2.0, y=-1.0),
             pos_count=1,
             seen_pos_count=2,
             vel_count=3,
@@ -41,14 +41,14 @@ def _world_model() -> pb2.WorldModel:
         ),
         our_players_dict={
             1: pb2.Player(
-                position=pb2.Vector2D(x=12.0, y=-4.0),
-                velocity=pb2.Vector2D(x=0.1, y=0.2),
+                position=pb2.RpcVector2D(x=12.0, y=-4.0),
+                velocity=pb2.RpcVector2D(x=0.1, y=0.2),
             )
         },
         their_players_dict={
             7: pb2.Player(
-                position=pb2.Vector2D(x=18.0, y=2.0),
-                velocity=pb2.Vector2D(x=-0.2, y=0.3),
+                position=pb2.RpcVector2D(x=18.0, y=2.0),
+                velocity=pb2.RpcVector2D(x=-0.2, y=0.3),
             )
         },
     )

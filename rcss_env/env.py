@@ -612,11 +612,25 @@ class RCSSEnv(MultiAgentEnv):
             view_act = self.bhv.view.parse(wm_opt)
 
             actions = (body_act, neck_act, view_act)
-            actions = pb2.PlayerActions(actions=actions)
+            actions = self.__player_actions(actions)
 
             ret[unum] = actions
 
         return ret
+
+    @staticmethod
+    def __player_actions(actions: tuple[pb2.PlayerAction, ...]) -> pb2.PlayerActions:
+        player_actions = pb2.PlayerActions(actions=actions)
+        for field_name in (
+            "ignore_preprocess",
+            "ignore_doforcekick",
+            "ignore_doHeardPassRecieve",
+            "ignore_doIntention",
+            "ignore_shootInPreprocess",
+        ):
+            if field_name in player_actions.DESCRIPTOR.fields_by_name:
+                setattr(player_actions, field_name, True)
+        return player_actions
 
     def __idle_action(self, unums: set[int]) -> dict[int, pb2.PlayerActions]:
         ret = {}
@@ -626,7 +640,7 @@ class RCSSEnv(MultiAgentEnv):
             view_act = self.bhv.view.parse(wm_opt)
 
             actions = (neck_act, view_act)
-            actions = pb2.PlayerActions(actions=actions)
+            actions = self.__player_actions(actions)
 
             ret[unum] = actions
 
