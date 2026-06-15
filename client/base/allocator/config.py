@@ -18,6 +18,13 @@ class AllocatorConfig(ClientConfig):
         """URL for room drop endpoint."""
         return self.base_url + self.path_room_drop
 
+    path_room_heartbeat: str = "/gs/heartbeat"
+
+    @property
+    def url_room_heartbeat(self) -> str:
+        """URL for room heartbeat endpoint."""
+        return self.base_url + self.path_room_heartbeat
+
     path_fleet_drop: str = "/fleet"
 
     @property

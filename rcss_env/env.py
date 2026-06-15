@@ -33,6 +33,7 @@ from .grpc_srv.proto import pb2
 from .grpc_srv.servicer import GameServicer
 
 logger = logging.getLogger(__name__)
+ROOM_HEARTBEAT_STEP_INTERVAL = 1000
 
 
 class RCSSEnv(MultiAgentEnv):
@@ -92,6 +93,7 @@ class RCSSEnv(MultiAgentEnv):
         # Allocator client and current room
         self.__allocator: AllocatorClient | None = None
         self.__room: RoomClient | None = None
+        self.__last_room_heartbeat_timestep: int | None = None
 
         # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
@@ -243,6 +245,7 @@ class RCSSEnv(MultiAgentEnv):
             # 5. Wait for all agent sidecars to send their initial states
             states = self.__collect_states()
             truth = self.__collect_truth_world_model(self.__aligned_state_cycle(states))
+            self.__heartbeat_room(force=True)
             logger.debug(
                 "Reset: collected initial states for unums=%s cycles=%s truth_cycle=%d",
                 sorted(states.keys()),
@@ -297,6 +300,7 @@ class RCSSEnv(MultiAgentEnv):
         self.__curr_truth_world_model = curr_truth
 
         self.__timestep = curr_cycle
+        self.__heartbeat_room()
 
         self.__last_reward_breakdowns = {}
         rewards: dict[int, float] = {}
@@ -401,6 +405,19 @@ class RCSSEnv(MultiAgentEnv):
             except Exception as exc:
                 logger.warning("Failed to release room %s: %s", self.room.info.name, exc)
             self.__room = None
+            self.__last_room_heartbeat_timestep = None
+
+    def __heartbeat_room(self, *, force: bool = False) -> None:
+        if not self.has_room():
+            return
+        if not force and self.__last_room_heartbeat_timestep is not None:
+            if self.__timestep - self.__last_room_heartbeat_timestep < ROOM_HEARTBEAT_STEP_INTERVAL:
+                return
+        try:
+            self.room.heartbeat()
+            self.__last_room_heartbeat_timestep = self.__timestep
+        except Exception as exc:
+            logger.warning("Failed to heartbeat room %s: %s", self.room.info.name, exc)
 
     def __sync_room_grpc_server(self, host: str, port: int) -> None:
         """Mirror the bound gRPC port into every SSP agent policy in the room schema."""
