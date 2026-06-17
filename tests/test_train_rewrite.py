@@ -29,6 +29,7 @@ from train.train import (
     run_training,
 )
 from train.curriculum.shooting import ShootingCurriculum
+from train.curriculum.dummy_marl import DummyMarlCurriculum
 
 
 class _FakeEpisode:
@@ -82,6 +83,32 @@ def test_build_train_config_parses_tune_and_aim_flags() -> None:
     assert cfg.num_gpus_per_learner == 0.25
     assert cfg.our_goalie_unum is None
     assert cfg.goal_r is None
+
+
+def test_build_train_config_loads_yaml_file_and_cli_overrides() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "-f",
+                "configs/train/dummy_marl_11v11.yaml",
+                "--no-timestamp-experiment-name",
+                "--experiment-name",
+                "unit-dummy-marl",
+                "--ray-address",
+                "local",
+            ]
+        )
+    )
+
+    env_cfg = build_env_config(cfg)
+    schema = env_cfg.curriculum.make_schema()
+
+    assert cfg.curriculum == "dummy_marl"
+    assert cfg.experiment_name == "unit-dummy-marl"
+    assert cfg.enable_aim is False
+    assert cfg.ray_address == "local"
+    assert isinstance(env_cfg.curriculum, DummyMarlCurriculum)
+    assert [player.unum for player in schema.teams.agent_team.ssp_agents()] == list(range(1, 12))
 
 
 def test_build_train_config_parses_resume_from_checkpoint() -> None:
@@ -248,6 +275,42 @@ def test_shooting_schema_uses_allocator_ssp_agent_payload_for_cls_ssp() -> None:
     }
     assert agent_policy == expected_policy
     assert coach_policy == expected_policy
+
+
+def test_build_env_config_uses_dummy_marl_curriculum_for_11v11() -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--curriculum",
+                "dummy_marl",
+                "--grpc-host",
+                "127.0.0.1",
+                "--grpc-port",
+                "43123",
+                "--allocator-host",
+                "allocator.default.svc",
+                "--allocator-port",
+                "8080",
+                "--time-up",
+                "321",
+            ]
+        )
+    )
+
+    env_cfg = build_env_config(cfg)
+    schema = env_cfg.curriculum.make_schema()
+    agent_team = schema.teams.agent_team
+    opponent_team = schema.teams.right if agent_team.side == schema.teams.left.side else schema.teams.left
+
+    assert isinstance(env_cfg.curriculum, DummyMarlCurriculum)
+    assert schema.stopping.time_up == 321
+    assert [player.unum for player in agent_team.ssp_agents()] == list(range(1, 12))
+    assert len(agent_team.players) == 11
+    assert len(opponent_team.players) == 11
+    assert list(opponent_team.ssp_agents()) == []
 
 
 def test_policy_image_validation_matches_allocator_image_declaration() -> None:

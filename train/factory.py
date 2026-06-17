@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic import IPvAnyAddress
-from typing import Literal
+from typing import Literal, cast
 
 from client.base.allocator.config import AllocatorConfig
 from rcss_env.config import EnvConfig
@@ -10,7 +10,9 @@ from utils.config import ServerConfig
 
 from .config import TrainConfig
 from .curriculum import CurriculumMixin
-from .curriculum.shooting import ShootingCurriculum, ShootingCurriculumConfig
+from .curriculum.registry import build_curriculum_from_config, clone_curriculum_config
+from .curriculum.dummy_marl import DummyMarlCurriculumConfig
+from .curriculum.shooting import ShootingCurriculumConfig
 
 
 def make_allocator_config(host: str, port: int) -> AllocatorConfig:
@@ -22,42 +24,30 @@ def make_server_config(host: str, port: int) -> ServerConfig:
 
 
 def build_shooting_curriculum_config(train_cfg: TrainConfig) -> ShootingCurriculumConfig:
-    return ShootingCurriculumConfig(
-        debug=train_cfg.curriculum_debug,
-        agent_unum=train_cfg.agent_unum,
-        team_side=train_cfg.team_side,
+    if not isinstance(train_cfg.curriculum_config, ShootingCurriculumConfig):
+        raise ValueError(f"Expected shooting curriculum, got {train_cfg.curriculum!r}")
+    config = clone_curriculum_config(
+        train_cfg.curriculum_config,
         grpc_server=make_server_config(train_cfg.grpc_host, train_cfg.grpc_port),
-        our_player_num=train_cfg.our_player_num,
-        oppo_player_num=train_cfg.oppo_player_num,
-        our_goalie_unum=train_cfg.our_goalie_unum,
-        oppo_goalie_unum=train_cfg.oppo_goalie_unum,
-        time_up=train_cfg.time_up,
-        goal_l=train_cfg.goal_l,
-        goal_r=train_cfg.goal_r,
-        our_team_name=train_cfg.our_team_name,
-        oppo_team_name=train_cfg.oppo_team_name,
-        player_agent_image=train_cfg.player_agent_image,
-        player_bot_image=train_cfg.player_bot_image,
-        reward_goal=train_cfg.reward_goal,
-        reward_concede=train_cfg.reward_concede,
-        reward_out_of_bounds=train_cfg.reward_out_of_bounds,
-        reward_kickable_bonus=train_cfg.reward_kickable_bonus,
-        reward_agent_to_ball_shaping=train_cfg.reward_agent_to_ball_shaping,
-        reward_ball_to_goal_shaping=train_cfg.reward_ball_to_goal_shaping,
-        reward_ball_velocity_to_goal=train_cfg.reward_ball_velocity_to_goal,
-        gamma_shaping=train_cfg.gamma_shaping,
-        shaping_clip=train_cfg.shaping_clip,
-        reward_time_decay=train_cfg.reward_time_decay,
-        max_cycle_gap=train_cfg.max_cycle_gap,
     )
+    return cast(ShootingCurriculumConfig, config)
+
+
+def build_dummy_marl_curriculum_config(train_cfg: TrainConfig) -> DummyMarlCurriculumConfig:
+    if not isinstance(train_cfg.curriculum_config, DummyMarlCurriculumConfig):
+        raise ValueError(f"Expected dummy_marl curriculum, got {train_cfg.curriculum!r}")
+    config = clone_curriculum_config(
+        train_cfg.curriculum_config,
+        grpc_server=make_server_config(train_cfg.grpc_host, train_cfg.grpc_port),
+    )
+    return cast(DummyMarlCurriculumConfig, config)
 
 
 def build_curriculum(train_cfg: TrainConfig) -> CurriculumMixin:
-    match train_cfg.curriculum:
-        case "shooting":
-            return ShootingCurriculum(build_shooting_curriculum_config(train_cfg))
-        case _:
-            raise ValueError(f"Unsupported curriculum: {train_cfg.curriculum!r}")
+    return build_curriculum_from_config(
+        train_cfg.curriculum_config,
+        grpc_server=make_server_config(train_cfg.grpc_host, train_cfg.grpc_port),
+    )
 
 
 def build_env_config(train_cfg: TrainConfig) -> EnvConfig:

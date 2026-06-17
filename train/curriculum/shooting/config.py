@@ -8,14 +8,15 @@ from ..utils import Region
 
 
 class ShootingCurriculumConfig(BaseModel):
+    type: Literal["shooting"] = "shooting"
     debug: bool = False
-    agent_unum: int = Field(ge=1, le=11)
+    agent_unum: int = Field(default=2, ge=1, le=11)
     team_side: Literal["left", "right", "rand"] = "left"
 
     grpc_server: ServerConfig = Field(default_factory=lambda: ServerConfig())
 
-    our_player_num: int = Field(ge=1, le=11)
-    oppo_player_num: int = Field(ge=1, le=11)
+    our_player_num: int = Field(default=2, ge=1, le=11)
+    oppo_player_num: int = Field(default=1, ge=1, le=11)
     our_goalie_unum: Optional[int] = Field(default=1, ge=1, le=11)
     oppo_goalie_unum: Optional[int] = Field(default=1, ge=1, le=11)
 

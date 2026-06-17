@@ -1,0 +1,49 @@
+runtime:
+  ray_address: local
+  experiment_name: dummy-marl-11v11
+  timestamp_experiment_name: true
+  num_iterations: 1000
+  checkpoint_freq: 10
+  checkpoint_num_to_keep: 20
+
+ppo:
+  num_env_runners: 4
+  num_envs_per_runner: 1
+  num_cpus_per_runner: 0.4
+  num_learners: 0
+  num_cpus_per_learner: auto
+  num_gpus_per_learner: 0.0
+  train_batch_size: 4000
+  sgd_minibatch_size: 128
+  num_sgd_iter: 10
+  lr: 0.0003
+  gamma: 0.99
+  entropy_coeff: 0.01
+  clip_param: 0.3
+
+infrastructure:
+  grpc:
+    host: 0.0.0.0
+    port: 0
+  allocator:
+    host: rcss-env-allocator.rcss-gateway-dev.svc.cluster.local
+    port: 80
+
+curriculum:
+  type: dummy_marl
+  debug: false
+  team_side: left
+  time_up: 5000
+  goal_l: 1
+  goal_r: 1
+  our_team_name: nexus-prime
+  oppo_team_name: bot
+  our_goalie_unum: 1
+  oppo_goalie_unum: 1
+  player_agent_image: CLSFramework/soccer-simulation-proxy
+  player_bot_image: HELIOS/helios-base
+
+logging:
+  enable_aim: false
+  aim_repo: /mnt/aim
+

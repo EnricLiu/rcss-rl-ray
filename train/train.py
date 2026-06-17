@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 from typing import Any, cast
 
@@ -22,7 +21,7 @@ from rcss_env.config import EnvConfig
 from rcss_env.env import RCSSEnv
 
 from train.callbacks import RCSSCallbacks
-from train.config import TrainConfig
+from train.config import TrainConfig, build_train_config, parse_args
 from train.factory import build_env_config
 from train.models.fcnet import RCSSPPOTorchRLModule
 
@@ -133,7 +132,6 @@ def build_tune_callbacks(train_cfg: TrainConfig) -> list[Any]:
     callbacks: list[Any] = []
     if train_cfg.enable_aim:
         try:
-            from dataclasses import asdict
             from train.callbacks import AimCallback
 
             callbacks.append(
@@ -141,7 +139,7 @@ def build_tune_callbacks(train_cfg: TrainConfig) -> list[Any]:
                     repo=train_cfg.aim_repo,
                     experiment_name=train_cfg.aim_experiment_name or train_cfg.experiment_name,
                     metrics=list(train_cfg.aim_metrics) if train_cfg.aim_metrics else None,
-                    run_params=asdict(cast(Any, train_cfg)),
+                    run_params=train_cfg.to_legacy_dict(),
                 )
             )
         except (AssertionError, ImportError) as exc:
@@ -245,188 +243,6 @@ def init_ray(train_cfg: TrainConfig) -> None:
     if ray_address and ray_address.lower() not in {"local", "none"}:
         init_kwargs["address"] = ray_address
     ray.init(**init_kwargs)
-
-
-def _optional_int(value: str) -> int | None:
-    if value.lower() in {"", "none", "null"}:
-        return None
-    return int(value)
-
-
-def _float_or_auto(value: str) -> float | str:
-    if value.lower() == "auto":
-        return "auto"
-    return float(value)
-
-
-def _csv_tuple(value: str | None) -> tuple[str, ...] | None:
-    if value is None:
-        return None
-    items = tuple(item.strip() for item in value.split(",") if item.strip())
-    return items or None
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    defaults = TrainConfig(timestamp_experiment_name=False)
-    parser = argparse.ArgumentParser(
-        description="Train PPO on RCSSEnv through Ray Tune and a selected curriculum."
-    )
-
-    # Ray / Tune runtime
-    parser.add_argument("--ray-address", type=str, default=defaults.ray_address)
-    parser.add_argument("--experiment-name", type=str, default=defaults.experiment_name)
-    parser.add_argument("--storage-path", type=str, default=defaults.storage_path)
-    parser.add_argument("--restore", dest="restore_path", type=str, default=defaults.restore_path)
-    parser.add_argument(
-        "--resume-from-checkpoint",
-        dest="resume_from_checkpoint",
-        type=str,
-        default=defaults.resume_from_checkpoint,
-        help="Start a new Tune run by loading weights/state from an RLlib checkpoint directory.",
-    )
-    parser.add_argument("--timestamp-experiment-name", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--num-samples", type=int, default=defaults.num_samples)
-    parser.add_argument("--metric", type=str, default=defaults.metric)
-    parser.add_argument("--checkpoint-metric", type=str, default=defaults.checkpoint_metric)
-    parser.add_argument("--checkpoint-source-metric", type=str, default=None)
-    parser.add_argument("--mode", choices=["min", "max"], default=defaults.mode)
-    parser.add_argument("--log-to-file", action="store_true", default=defaults.log_to_file)
-
-    # PPO / RLlib hyperparameters
-    parser.add_argument("--num-env-runners", type=int, default=defaults.num_env_runners)
-    parser.add_argument("--num-envs-per-runner", type=int, default=defaults.num_envs_per_runner)
-    parser.add_argument("--num-cpus-per-runner", type=float, default=defaults.num_cpus_per_runner)
-    parser.add_argument("--num-learners", type=int, default=defaults.num_learners)
-    parser.add_argument("--num-cpus-per-learner", type=_float_or_auto, default=defaults.num_cpus_per_learner)
-    parser.add_argument("--num-gpus-per-learner", type=float, default=defaults.num_gpus_per_learner)
-    parser.add_argument("--train-batch-size", type=int, default=defaults.train_batch_size)
-    parser.add_argument("--sgd-minibatch-size", type=int, default=defaults.sgd_minibatch_size)
-    parser.add_argument("--num-sgd-iter", type=int, default=defaults.num_sgd_iter)
-    parser.add_argument("--lr", type=float, default=defaults.lr)
-    parser.add_argument("--gamma", type=float, default=defaults.gamma)
-    parser.add_argument("--entropy-coeff", type=float, default=defaults.entropy_coeff)
-    parser.add_argument("--clip-param", type=float, default=defaults.clip_param)
-    parser.add_argument("--num-iterations", type=int, default=defaults.num_iterations)
-    parser.add_argument("--checkpoint-freq", type=int, default=defaults.checkpoint_freq)
-    parser.add_argument("--checkpoint-num-to-keep", type=_optional_int, default=defaults.checkpoint_num_to_keep)
-    parser.add_argument("--no-checkpoint-at-end", dest="checkpoint_at_end", action="store_false", default=defaults.checkpoint_at_end)
-
-    # Infrastructure
-    parser.add_argument("--grpc-host", type=str, default=defaults.grpc_host)
-    parser.add_argument("--grpc-port", type=int, default=defaults.grpc_port)
-    parser.add_argument("--allocator-host", type=str, default=defaults.allocator_host)
-    parser.add_argument("--allocator-port", type=int, default=defaults.allocator_port)
-
-    # Curriculum
-    parser.add_argument("--curriculum", choices=["shooting"], default=defaults.curriculum)
-    parser.add_argument("--curriculum-debug", action=argparse.BooleanOptionalAction, default=defaults.curriculum_debug)
-    parser.add_argument("--agent-unum", type=int, default=defaults.agent_unum)
-    parser.add_argument("--team-side", choices=["left", "right", "rand"], default=defaults.team_side)
-    parser.add_argument("--our-player-num", type=int, default=defaults.our_player_num)
-    parser.add_argument("--oppo-player-num", type=int, default=defaults.oppo_player_num)
-    parser.add_argument("--our-goalie-unum", type=_optional_int, default=defaults.our_goalie_unum)
-    parser.add_argument("--oppo-goalie-unum", type=_optional_int, default=defaults.oppo_goalie_unum)
-    parser.add_argument("--our-team-name", type=str, default=defaults.our_team_name)
-    parser.add_argument("--oppo-team-name", type=str, default=defaults.oppo_team_name)
-    parser.add_argument("--agent-image", dest="player_agent_image", type=str, default=defaults.player_agent_image)
-    parser.add_argument("--bot-image", dest="player_bot_image", type=str, default=defaults.player_bot_image)
-    parser.add_argument("--time-up", type=int, default=defaults.time_up)
-    parser.add_argument("--goal-l", type=_optional_int, default=defaults.goal_l)
-    parser.add_argument("--goal-r", type=_optional_int, default=defaults.goal_r)
-    parser.add_argument("--reward-goal", type=float, default=defaults.reward_goal)
-    parser.add_argument("--reward-concede", type=float, default=defaults.reward_concede)
-    parser.add_argument("--reward-out-of-bounds", type=float, default=defaults.reward_out_of_bounds)
-    parser.add_argument("--reward-kickable-bonus", type=float, default=defaults.reward_kickable_bonus)
-    parser.add_argument("--reward-agent-to-ball-shaping", type=float, default=defaults.reward_agent_to_ball_shaping)
-    parser.add_argument("--reward-ball-to-goal-shaping", type=float, default=defaults.reward_ball_to_goal_shaping)
-    parser.add_argument("--reward-ball-velocity-to-goal", type=float, default=defaults.reward_ball_velocity_to_goal)
-    parser.add_argument("--gamma-shaping", type=float, default=defaults.gamma_shaping)
-    parser.add_argument("--shaping-clip", type=float, default=defaults.shaping_clip)
-    parser.add_argument("--reward-time-decay", type=float, default=defaults.reward_time_decay)
-    parser.add_argument("--max-cycle-gap", type=int, default=defaults.max_cycle_gap)
-
-    # Aim
-    parser.add_argument("--disable-aim", dest="enable_aim", action="store_false", default=defaults.enable_aim)
-    parser.add_argument("--aim-repo", type=str, default=defaults.aim_repo)
-    parser.add_argument("--aim-experiment-name", type=str, default=None)
-    parser.add_argument("--aim-metrics", type=str, default=None, help="Comma-separated Tune metric names to log to Aim.")
-
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-    )
-
-    return parser.parse_args(argv)
-
-
-def build_train_config(args: argparse.Namespace) -> TrainConfig:
-    return TrainConfig(
-        ray_address=args.ray_address,
-        experiment_name=args.experiment_name,
-        storage_path=args.storage_path,
-        restore_path=args.restore_path,
-        resume_from_checkpoint=args.resume_from_checkpoint,
-        timestamp_experiment_name=args.timestamp_experiment_name,
-        num_samples=args.num_samples,
-        metric=args.metric,
-        checkpoint_metric=args.checkpoint_metric,
-        checkpoint_source_metric=args.checkpoint_source_metric,
-        mode=args.mode,
-        log_to_file=args.log_to_file,
-        num_env_runners=args.num_env_runners,
-        num_envs_per_runner=args.num_envs_per_runner,
-        num_cpus_per_runner=args.num_cpus_per_runner,
-        num_learners=args.num_learners,
-        num_cpus_per_learner=args.num_cpus_per_learner,
-        num_gpus_per_learner=args.num_gpus_per_learner,
-        train_batch_size=args.train_batch_size,
-        sgd_minibatch_size=args.sgd_minibatch_size,
-        num_sgd_iter=args.num_sgd_iter,
-        lr=args.lr,
-        gamma=args.gamma,
-        entropy_coeff=args.entropy_coeff,
-        clip_param=args.clip_param,
-        num_iterations=args.num_iterations,
-        checkpoint_freq=args.checkpoint_freq,
-        checkpoint_num_to_keep=args.checkpoint_num_to_keep,
-        checkpoint_at_end=args.checkpoint_at_end,
-        grpc_host=args.grpc_host,
-        grpc_port=args.grpc_port,
-        allocator_host=args.allocator_host,
-        allocator_port=args.allocator_port,
-        curriculum=args.curriculum,
-        curriculum_debug=args.curriculum_debug,
-        agent_unum=args.agent_unum,
-        team_side=args.team_side,
-        our_player_num=args.our_player_num,
-        oppo_player_num=args.oppo_player_num,
-        our_goalie_unum=args.our_goalie_unum,
-        oppo_goalie_unum=args.oppo_goalie_unum,
-        our_team_name=args.our_team_name,
-        oppo_team_name=args.oppo_team_name,
-        player_agent_image=args.player_agent_image,
-        player_bot_image=args.player_bot_image,
-        time_up=args.time_up,
-        goal_l=args.goal_l,
-        goal_r=args.goal_r,
-        reward_goal=args.reward_goal,
-        reward_concede=args.reward_concede,
-        reward_out_of_bounds=args.reward_out_of_bounds,
-        reward_kickable_bonus=args.reward_kickable_bonus,
-        reward_agent_to_ball_shaping=args.reward_agent_to_ball_shaping,
-        reward_ball_to_goal_shaping=args.reward_ball_to_goal_shaping,
-        reward_ball_velocity_to_goal=args.reward_ball_velocity_to_goal,
-        gamma_shaping=args.gamma_shaping,
-        shaping_clip=args.shaping_clip,
-        reward_time_decay=args.reward_time_decay,
-        max_cycle_gap=args.max_cycle_gap,
-        enable_aim=args.enable_aim,
-        aim_repo=args.aim_repo,
-        aim_experiment_name=args.aim_experiment_name,
-        aim_metrics=_csv_tuple(args.aim_metrics),
-    )
 
 
 def log_best_result(results: Any, train_cfg: TrainConfig) -> None:
