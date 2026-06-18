@@ -39,17 +39,18 @@ def _world_model(
         our_side=our_side,
         cycle=cycle,
         ball=pb2.Ball(
-            position=pb2.Vector2D(x=ball_x, y=ball_y),
-            velocity=pb2.Vector2D(x=ball_vx, y=ball_vy),
+            position=pb2.RpcVector2D(x=ball_x, y=ball_y),
+            velocity=pb2.RpcVector2D(x=ball_vx, y=ball_vy),
         ),
         self=pb2.Self(
-            position=pb2.Vector2D(x=self_x, y=self_y),
+            uniform_number=agent_unum,
+            position=pb2.RpcVector2D(x=self_x, y=self_y),
             is_kickable=self_kickable,
         ),
         our_players_dict={
             agent_unum: pb2.Player(
                 uniform_number=agent_unum,
-                position=pb2.Vector2D(x=self_x, y=self_y),
+                position=pb2.RpcVector2D(x=self_x, y=self_y),
                 dist_from_ball=((self_x - ball_x) ** 2 + (self_y - ball_y) ** 2) ** 0.5,
                 ball_reach_steps=0 if self_kickable else 1,
             ),

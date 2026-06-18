@@ -96,7 +96,7 @@ def env_config() -> EnvConfig:
                             unum=1,
                             policy=SspAgentPolicy(
                                 kind=PolicyKind.Agent,
-                                image="Cyrus2D/SoccerSimulationProxy",
+                                image="CLSFramework/soccer-simulation-proxy",
                                 agent=PolicyAgentKind.Ssp,
                                 grpc_host=IPv4Address("127.0.0.1"),
                                 grpc_port=50051,
@@ -106,7 +106,7 @@ def env_config() -> EnvConfig:
                             unum=2,
                             policy=SspAgentPolicy(
                                 kind=PolicyKind.Agent,
-                                image="Cyrus2D/SoccerSimulationProxy",
+                                image="CLSFramework/soccer-simulation-proxy",
                                 agent=PolicyAgentKind.Ssp,
                                 grpc_host=IPv4Address("127.0.0.1"),
                                 grpc_port=50051,

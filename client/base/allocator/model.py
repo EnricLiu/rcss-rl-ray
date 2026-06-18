@@ -7,6 +7,12 @@ class PostAllocateRoomRequest(BaseModel):
     conf: GameServerSchema
     version: int = 1
 
+class DeleteDropRoomRequest(BaseModel):
+    name: str
+
+class PostHeartbeatRoomRequest(BaseModel):
+    name: str
+
 class PostCreateFleetRequest(BaseModel):
     name: str
     conf: GameServerSchema

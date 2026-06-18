@@ -32,9 +32,11 @@ from schema import GameServerSchema, SCHEMA_VERSION
 from .config import AllocatorConfig
 
 from .model import (
+    DeleteDropRoomRequest,
     DeleteDropFleetRequest,
     GetFleetTemplateRequest,
     PostAllocateRoomRequest,
+    PostHeartbeatRoomRequest,
     PostCreateFleetRequest,
 )
 
@@ -94,6 +96,29 @@ class AllocatorClient(BaseApiClient):
 
         room = RoomClient(data, self)
         return room
+
+    @retry(max_retries=3, delay=0.5, backoff=1.0, logger=logger)
+    def drop_room(self, room_name: str) -> None:
+        payload = DeleteDropRoomRequest(
+            name=room_name,
+        )
+
+        self._request_payload(
+            "DELETE",
+            self.config.path_room_drop,
+            json=payload,
+        )
+
+    def heartbeat_room(self, room_name: str) -> None:
+        payload = PostHeartbeatRoomRequest(
+            name=room_name,
+        )
+
+        self._request_payload(
+            "POST",
+            self.config.path_room_heartbeat,
+            json=payload,
+        )
 
     @retry(max_retries=3, delay=0.5, backoff=1.0, logger=logger)
     def create_fleet(

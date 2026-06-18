@@ -46,6 +46,10 @@ class FakeServicer:
         return {"registered": []}
 
 
+def _n_actions_for_test(cls: type[Action]) -> int:
+    return len(cls.action_names())
+
+
 def _load_env_types(monkeypatch: pytest.MonkeyPatch) -> tuple[type[Any], type[Any], type[Any]]:
     config_module = types.ModuleType("rcss_env.config")
 
@@ -92,7 +96,7 @@ def _build_schema() -> GameServerSchema:
                     PlayerSchema(
                         unum=1,
                         policy=SspAgentPolicy(
-                            image="Cyrus2D/SoccerSimulationProxy",
+                            image="CLSFramework/soccer-simulation-proxy",
                             grpc_host=IPv4Address("127.0.0.1"),
                             grpc_port=50051,
                         ),
@@ -100,7 +104,7 @@ def _build_schema() -> GameServerSchema:
                     PlayerSchema(
                         unum=2,
                         policy=SspAgentPolicy(
-                            image="Cyrus2D/SoccerSimulationProxy",
+                            image="CLSFramework/soccer-simulation-proxy",
                             grpc_host=IPv4Address("127.0.0.1"),
                             grpc_port=50051,
                         ),
@@ -139,7 +143,7 @@ def test_step_reset_needed_returns_contract_compliant_truncated_payload(
         self._RCSSEnv__allocator = object()
         self._RCSSEnv__servicer = FakeServicer()
 
-    monkeypatch.setattr(Action, "n_actions", classmethod(lambda cls: len(cls.action_names())))
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
     monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
 
     env = RCSSEnv(
@@ -203,7 +207,7 @@ def test_env_init_does_not_emit_box_precision_warnings(
         self._RCSSEnv__allocator = object()
         self._RCSSEnv__servicer = FakeServicer()
 
-    monkeypatch.setattr(Action, "n_actions", classmethod(lambda cls: len(cls.action_names())))
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
     monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
 
     with warnings.catch_warnings(record=True) as caught:
@@ -224,6 +228,43 @@ def test_env_init_does_not_emit_box_precision_warnings(
     assert precision_warnings == []
 
 
+def test_env_exposes_new_api_multi_agent_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    EnvConfig, RCSSEnv, CurriculumMixin = _load_env_types(monkeypatch)
+    schema = _build_schema()
+
+    class StaticCurriculum(CurriculumMixin):
+        def make_schema(self) -> GameServerSchema:
+            return schema
+
+        def reward_fn(self) -> DummyRewardFn:
+            return DummyRewardFn()
+
+    def fake_setup(self: Any) -> None:
+        self._RCSSEnv__allocator = object()
+        self._RCSSEnv__servicer = FakeServicer()
+
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
+    monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
+
+    env = RCSSEnv(
+        EnvConfig(
+            grpc=ServerConfig(host=IPv4Address("127.0.0.1"), port=50051),
+            allocator=AllocatorConfig(base_url="http://allocator:5555"),
+            curriculum=StaticCurriculum(),
+        )
+    )
+
+    assert env.agents == [1, 2]
+    assert env.possible_agents == [1, 2]
+    for agent_id in env.possible_agents:
+        assert env.get_observation_space(agent_id) is env.observation_space
+        assert env.get_action_space(agent_id) is env.action_space
+        assert env.observation_spaces[agent_id] is env.observation_space
+        assert env.action_spaces[agent_id] is env.action_space
+
+
 def test_states_to_obs_coerces_float64_and_non_finite_values_into_space(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -242,7 +283,7 @@ def test_states_to_obs_coerces_float64_and_non_finite_values_into_space(
         self._RCSSEnv__allocator = object()
         self._RCSSEnv__servicer = FakeServicer()
 
-    monkeypatch.setattr(Action, "n_actions", classmethod(lambda cls: len(cls.action_names())))
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
     monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
 
     env = RCSSEnv(
@@ -318,7 +359,7 @@ def test_calc_reward_uses_coach_truth_instead_of_player_full_world_model(
         self._RCSSEnv__allocator = object()
         self._RCSSEnv__servicer = FakeServicer()
 
-    monkeypatch.setattr(Action, "n_actions", classmethod(lambda cls: len(cls.action_names())))
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
     monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
 
     env = RCSSEnv(

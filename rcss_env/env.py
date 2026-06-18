@@ -33,6 +33,7 @@ from .grpc_srv.proto import pb2
 from .grpc_srv.servicer import GameServicer
 
 logger = logging.getLogger(__name__)
+ROOM_HEARTBEAT_STEP_INTERVAL = 1000
 
 
 class RCSSEnv(MultiAgentEnv):
@@ -70,7 +71,10 @@ class RCSSEnv(MultiAgentEnv):
 
         # Sorted list of agent ids (by unum)
         self.agents = list(sorted(self.agent_team_unums))
+        self.possible_agents = self.agents.copy()
 
+        self.observation_space = _obs_space
+        self.action_space = _act_space
         self.observation_spaces = {unum: _obs_space for unum in self.agents}
         self.action_spaces = {unum: _act_space for unum in self.agents}
 
@@ -89,6 +93,7 @@ class RCSSEnv(MultiAgentEnv):
         # Allocator client and current room
         self.__allocator: AllocatorClient | None = None
         self.__room: RoomClient | None = None
+        self.__last_room_heartbeat_timestep: int | None = None
 
         # Per-agent State cache from the previous step, used for reward computation
         self.__prev_states: dict[int, pb2.State] = {}
@@ -240,6 +245,7 @@ class RCSSEnv(MultiAgentEnv):
             # 5. Wait for all agent sidecars to send their initial states
             states = self.__collect_states()
             truth = self.__collect_truth_world_model(self.__aligned_state_cycle(states))
+            self.__heartbeat_room(force=True)
             logger.debug(
                 "Reset: collected initial states for unums=%s cycles=%s truth_cycle=%d",
                 sorted(states.keys()),
@@ -294,6 +300,7 @@ class RCSSEnv(MultiAgentEnv):
         self.__curr_truth_world_model = curr_truth
 
         self.__timestep = curr_cycle
+        self.__heartbeat_room()
 
         self.__last_reward_breakdowns = {}
         rewards: dict[int, float] = {}
@@ -398,6 +405,19 @@ class RCSSEnv(MultiAgentEnv):
             except Exception as exc:
                 logger.warning("Failed to release room %s: %s", self.room.info.name, exc)
             self.__room = None
+            self.__last_room_heartbeat_timestep = None
+
+    def __heartbeat_room(self, *, force: bool = False) -> None:
+        if not self.has_room():
+            return
+        if not force and self.__last_room_heartbeat_timestep is not None:
+            if self.__timestep - self.__last_room_heartbeat_timestep < ROOM_HEARTBEAT_STEP_INTERVAL:
+                return
+        try:
+            self.room.heartbeat()
+            self.__last_room_heartbeat_timestep = self.__timestep
+        except Exception as exc:
+            logger.warning("Failed to heartbeat room %s: %s", self.room.info.name, exc)
 
     def __sync_room_grpc_server(self, host: str, port: int) -> None:
         """Mirror the bound gRPC port into every SSP agent policy in the room schema."""
@@ -609,11 +629,25 @@ class RCSSEnv(MultiAgentEnv):
             view_act = self.bhv.view.parse(wm_opt)
 
             actions = (body_act, neck_act, view_act)
-            actions = pb2.PlayerActions(actions=actions)
+            actions = self.__player_actions(actions)
 
             ret[unum] = actions
 
         return ret
+
+    @staticmethod
+    def __player_actions(actions: tuple[pb2.PlayerAction, ...]) -> pb2.PlayerActions:
+        player_actions = pb2.PlayerActions(actions=actions)
+        for field_name in (
+            "ignore_preprocess",
+            "ignore_doforcekick",
+            "ignore_doHeardPassRecieve",
+            "ignore_doIntention",
+            "ignore_shootInPreprocess",
+        ):
+            if field_name in player_actions.DESCRIPTOR.fields_by_name:
+                setattr(player_actions, field_name, True)
+        return player_actions
 
     def __idle_action(self, unums: set[int]) -> dict[int, pb2.PlayerActions]:
         ret = {}
@@ -623,7 +657,7 @@ class RCSSEnv(MultiAgentEnv):
             view_act = self.bhv.view.parse(wm_opt)
 
             actions = (neck_act, view_act)
-            actions = pb2.PlayerActions(actions=actions)
+            actions = self.__player_actions(actions)
 
             ret[unum] = actions
 

@@ -1,20 +1,22 @@
 from typing import Literal, Any, Optional
 
 from pydantic import BaseModel, Field
+from schema.policy import DEFAULT_SSP_AGENT_IMAGE
 from utils.config import ServerConfig
 
 from ..utils import Region
 
 
 class ShootingCurriculumConfig(BaseModel):
+    type: Literal["shooting"] = "shooting"
     debug: bool = False
-    agent_unum: int = Field(ge=1, le=11)
+    agent_unum: int = Field(default=2, ge=1, le=11)
     team_side: Literal["left", "right", "rand"] = "left"
 
     grpc_server: ServerConfig = Field(default_factory=lambda: ServerConfig())
 
-    our_player_num: int = Field(ge=1, le=11)
-    oppo_player_num: int = Field(ge=1, le=11)
+    our_player_num: int = Field(default=2, ge=1, le=11)
+    oppo_player_num: int = Field(default=1, ge=1, le=11)
     our_goalie_unum: Optional[int] = Field(default=1, ge=1, le=11)
     oppo_goalie_unum: Optional[int] = Field(default=1, ge=1, le=11)
 
@@ -28,7 +30,7 @@ class ShootingCurriculumConfig(BaseModel):
     agent_region: Region = Field(default_factory=lambda: Region.from_range(x=(-20, 30), y=(-30, 30)))
     ball_region: Region = Field(default_factory=lambda: Region.from_range(x=(-20, 40), y=(-34, 34)))
 
-    player_agent_image: str = "Cyrus2D/SoccerSimulationProxy"
+    player_agent_image: str = DEFAULT_SSP_AGENT_IMAGE
     player_bot_image: str = "HELIOS/helios-base"
 
     # ---- Sparse / event-based ----

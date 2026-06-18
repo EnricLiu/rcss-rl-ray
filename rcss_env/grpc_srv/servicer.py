@@ -35,6 +35,8 @@ ACTION_SEND_TIMEOUT_S = 5
 # Timeout for a single action queue put (prevents event-loop deadlock when queue is full)
 ACTION_PUT_TIMEOUT_S = 5.0
 
+SSP_RPC_SERVER_LANGUAGE = getattr(pb2, "PYThON", 0)
+
 
 class ActionTimeoutError(RuntimeError):
     """Raised when a sidecar waits too long for RL actions."""
@@ -64,6 +66,11 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_get_action_meta: dict[int, dict[str, Any]] = {}
         self._last_action_send_meta: dict[int, dict[str, Any]] = {}
         self._last_coach_truth_meta: dict[str, Any] = {}
+        self._last_need_preprocess: dict[int, bool] = {}
+        self._last_bye_meta: dict[int, dict[str, Any]] = {}
+        self._last_planner_meta: dict[str, Any] = {}
+        self._clients: dict[int, dict[str, Any]] = {}
+        self._next_client_id = 1
         self._truth_buffer = TruthWorldModelBuffer()
         self._runtime_error: Exception | None = None
 
@@ -121,6 +128,19 @@ class GameServicer(pb2_grpc.GameServicer):
                 for unum, meta in sorted(self._last_action_send_meta.items())
             },
             "last_coach_truth": dict(self._last_coach_truth_meta),
+            "last_need_preprocess": {
+                str(unum): value
+                for unum, value in sorted(self._last_need_preprocess.items())
+            },
+            "last_bye": {
+                str(client_id): dict(meta)
+                for client_id, meta in sorted(self._last_bye_meta.items())
+            },
+            "last_planner": dict(self._last_planner_meta),
+            "clients": {
+                str(client_id): dict(meta)
+                for client_id, meta in sorted(self._clients.items())
+            },
             "truth_buffer": self._truth_buffer.snapshot(),
             "runtime_error": None if self._runtime_error is None else {
                 "type": type(self._runtime_error).__name__,
@@ -149,6 +169,114 @@ class GameServicer(pb2_grpc.GameServicer):
     # ------------------------------------------------------------------
     # gRPC RPC handlers (called by the sidecar)
     # ------------------------------------------------------------------
+
+    async def _abort_or_raise(
+        self,
+        context: grpc.aio.ServicerContext | None,
+        code: grpc.StatusCode,
+        message: str,
+    ) -> None:
+        if context is not None:
+            await context.abort(code, message)
+        raise ValueError(message)
+
+    @staticmethod
+    def _has_field(message: Any, field: str) -> bool:
+        try:
+            return bool(message.HasField(field))
+        except (AttributeError, ValueError):
+            return False
+
+    async def Register(
+        self, request: pb2.RegisterRequest, context: grpc.aio.ServicerContext | None
+    ) -> pb2.RegisterResponse:
+        """Register an SSP v2 client and return its server-side client id."""
+        uniform_number = int(request.uniform_number)
+        agent_type = int(request.agent_type)
+
+        if request.agent_type == pb2.PlayerT and uniform_number not in self._batcher.unums():
+            await self._abort_or_raise(
+                context,
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"Register received unconfigured player uniform_number={uniform_number}",
+            )
+
+        client_id = self._next_client_id
+        self._next_client_id += 1
+        response = pb2.RegisterResponse(
+            client_id=client_id,
+            agent_type=request.agent_type,
+            team_name=request.team_name,
+            uniform_number=uniform_number,
+            rpc_server_language_type=SSP_RPC_SERVER_LANGUAGE,
+        )
+        self._clients[client_id] = {
+            "agent_type": agent_type,
+            "team_name": request.team_name,
+            "uniform_number": uniform_number,
+            "status": "connected",
+            "rpc_version": request.rpc_version,
+            "connected_monotonic_s": round(perf_counter(), 6),
+        }
+        logger.debug(
+            "Registered SSP v2 client_id=%d agent_type=%s team=%s unum=%d",
+            client_id,
+            agent_type,
+            request.team_name,
+            uniform_number,
+        )
+        return response
+
+    async def SendByeCommand(
+        self, request: pb2.RegisterResponse, context: grpc.aio.ServicerContext | None
+    ) -> pb2.Empty:
+        """Record SSP v2 client shutdown notifications."""
+        client_id = int(request.client_id)
+        meta = {
+            "agent_type": int(request.agent_type),
+            "team_name": request.team_name,
+            "uniform_number": int(request.uniform_number),
+            "received_monotonic_s": round(perf_counter(), 6),
+        }
+        self._last_bye_meta[client_id] = meta
+        if client_id in self._clients:
+            self._clients[client_id].update({
+                "status": "disconnected",
+                "disconnected_monotonic_s": meta["received_monotonic_s"],
+            })
+        logger.debug("Received SSP v2 bye command: client_id=%d meta=%s", client_id, meta)
+        return pb2.Empty()
+
+    async def GetBestPlannerAction(
+        self,
+        request: pb2.BestPlannerActionRequest,
+        context: grpc.aio.ServicerContext | None,
+    ) -> pb2.BestPlannerActionResponse:
+        """Return a deterministic fallback planner choice without changing RL action space."""
+        indices = sorted(int(index) for index in request.pairs.keys())
+        selected_index = indices[0] if indices else 0
+        self._last_planner_meta = {
+            "client_id": int(request.register_response.client_id),
+            "n_pairs": len(indices),
+            "selected_index": selected_index,
+            "received_monotonic_s": round(perf_counter(), 6),
+        }
+        return pb2.BestPlannerActionResponse(index=selected_index)
+
+    def _request_unum(self, request: pb2.State) -> int | None:
+        register_unum: int | None = None
+        if self._has_field(request, "register_response"):
+            register_unum = int(request.register_response.uniform_number)
+
+        wm_unum: int | None = None
+        if self._has_field(request, "world_model") and self._has_field(request.world_model, "self"):
+            wm_unum = int(request.world_model.self.uniform_number)
+
+        if register_unum and wm_unum and register_unum != wm_unum:
+            raise ValueError(
+                f"State uniform_number mismatch: register_response={register_unum}, world_model.self={wm_unum}"
+            )
+        return register_unum or wm_unum
 
     async def __get_action(self, unum: int, state: pb2.State) -> pb2.PlayerActions | None:
         """Submit a state to the batcher and wait for the RL loop to provide actions."""
@@ -233,14 +361,21 @@ class GameServicer(pb2_grpc.GameServicer):
         self, request: pb2.State, context: grpc.aio.ServicerContext
     ) -> pb2.PlayerActions:
         """Handle a GetPlayerActions RPC from the sidecar."""
-        wm = request.world_model
-        if wm is None or not wm.HasField("self"):
+        try:
+            unum = self._request_unum(request)
+        except ValueError as exc:
+            self._set_runtime_error(exc)
+            await self._abort_or_raise(context, grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+            return pb2.PlayerActions()
+
+        if unum is None:
             logger.warning(
-                "GetPlayerActions received state with no self info; returning empty actions"
+                "GetPlayerActions received state with no register_response or self info; returning empty actions"
             )
             return pb2.PlayerActions()
 
-        actions = await self.__get_action(wm.self.uniform_number, request)
+        self._last_need_preprocess[unum] = bool(request.need_preprocess)
+        actions = await self.__get_action(unum, request)
         return actions or pb2.PlayerActions()
 
     async def GetCoachActions(
@@ -255,6 +390,7 @@ class GameServicer(pb2_grpc.GameServicer):
         await self._truth_buffer.put(wm)
         self._last_coach_truth_meta = {
             "cycle": wm.cycle,
+            "client_id": int(request.register_response.client_id) if self._has_field(request, "register_response") else None,
             "received_monotonic_s": round(perf_counter(), 6),
             "game_mode_type": wm.game_mode_type,
         }
@@ -265,7 +401,8 @@ class GameServicer(pb2_grpc.GameServicer):
         self, request: pb2.State, context: grpc.aio.ServicerContext
     ) -> pb2.TrainerActions:
         """Handle a GetTrainerActions RPC (currently returns empty actions)."""
-        logger.debug("GetTrainerActions called (cycle=%d)", request.world_model.cycle)
+        cycle = request.world_model.cycle if self._has_field(request, "world_model") else -1
+        logger.debug("GetTrainerActions called (cycle=%d)", cycle)
         return pb2.TrainerActions()
 
     async def SendInitMessage(
@@ -273,9 +410,11 @@ class GameServicer(pb2_grpc.GameServicer):
     ) -> pb2.Empty:
         """Handle a SendInitMessage RPC, storing the debug-mode flag."""
         self._debug_mode = request.debug_mode
+        register_response = request.register_response if self._has_field(request, "register_response") else None
         logger.debug(
-            "Received InitMessage: agent_type=%s, debug_mode=%s",
-            request.agent_type,
+            "Received InitMessage: client_id=%s agent_type=%s debug_mode=%s",
+            None if register_response is None else register_response.client_id,
+            None if register_response is None else register_response.agent_type,
             request.debug_mode,
         )
         return pb2.Empty()
@@ -303,12 +442,6 @@ class GameServicer(pb2_grpc.GameServicer):
         self._player_types[request.id] = request
         logger.debug("Received PlayerType id=%d", request.id)
         return pb2.Empty()
-
-    async def GetInitMessage(
-        self, request: pb2.Empty, context: grpc.aio.ServicerContext
-    ) -> pb2.InitMessageFromServer:
-        """Handle a GetInitMessage RPC (currently returns an empty message)."""
-        return pb2.InitMessageFromServer()
 
     # ------------------------------------------------------------------
     # Async internal helpers
@@ -551,6 +684,11 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_get_action_meta.clear()
         self._last_action_send_meta.clear()
         self._last_coach_truth_meta.clear()
+        self._last_need_preprocess.clear()
+        self._last_bye_meta.clear()
+        self._last_planner_meta.clear()
+        self._clients.clear()
+        self._next_client_id = 1
         await self._truth_buffer.reset()
         self._runtime_error = None
         self._states_queues.clear()
@@ -578,6 +716,11 @@ class GameServicer(pb2_grpc.GameServicer):
             self._last_get_action_meta.clear()
             self._last_action_send_meta.clear()
             self._last_coach_truth_meta.clear()
+            self._last_need_preprocess.clear()
+            self._last_bye_meta.clear()
+            self._last_planner_meta.clear()
+            self._clients.clear()
+            self._next_client_id = 1
             self._truth_buffer = TruthWorldModelBuffer()
             self._runtime_error = None
             self._states_queues.clear()

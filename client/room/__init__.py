@@ -1,7 +1,10 @@
 from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING, cast
 
 from .info import RoomInfo
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..base.allocator import AllocatorClient
@@ -57,4 +60,15 @@ class RoomClient:
         return self.__mc
 
     def release(self, *, force: bool = True) -> None:
-        self.rcss.shutdown(force=force)
+        try:
+            self.rcss.shutdown(force=force)
+        except Exception as exc:
+            logger.warning("Failed to shutdown room %s via rcss endpoint: %s", self.info.name, exc)
+            try:
+                self.client.drop_room(self.info.name)
+            except Exception as err:
+                logger.warning("Failed to drop GameServer for room %s: %s", self.info.name, err)
+                raise err from exc
+
+    def heartbeat(self) -> None:
+        self.client.heartbeat_room(self.info.name)
