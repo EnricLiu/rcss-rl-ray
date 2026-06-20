@@ -1,0 +1,27 @@
+bundle: /mnt/models/dummy-marl-11v11/replace-with-version
+device: cpu
+deterministic: true
+fallback_on_policy_error: true
+episodes: 1
+seed: 0
+max_episode_retries: 0
+
+infrastructure:
+  grpc:
+    host: 0.0.0.0
+    port: 0
+  allocator:
+    host: rcss-env-allocator.rcss-gateway-dev.svc.cluster.local
+    port: 80
+
+curriculum:
+  type: dummy_marl
+  debug: false
+  team_side: left
+  time_up: 5000
+  goal_l: 1
+  goal_r: 1
+
+logging:
+  level: INFO
+  trace_actions: false
