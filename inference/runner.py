@@ -139,10 +139,14 @@ def _latest_scores(
         if isinstance(scores, Mapping):
             our = scores.get("our")
             their = scores.get("their")
-            return (
-                None if our is None else float(our),
-                None if their is None else float(their),
-            )
+            try:
+                return (
+                    None if our is None else float(our),
+                    None if their is None else float(their),
+                )
+            except (TypeError, ValueError):
+                logger.warning("Ignoring malformed score metadata: %r", scores)
+                return None, None
     return None, None
 
 
@@ -150,7 +154,11 @@ def _latest_cycle(infos: Mapping[int, Mapping[str, Any]]) -> int | None:
     for info in infos.values():
         cycle = info.get("cycle")
         if cycle is not None:
-            return int(cycle)
+            try:
+                return int(cycle)
+            except (TypeError, ValueError):
+                logger.warning("Ignoring malformed cycle metadata: %r", cycle)
+                return None
     return None
 
 
@@ -186,7 +194,10 @@ class InferenceRunner:
                 requested_episodes=self.episodes,
             )
         finally:
-            self.env.close()
+            try:
+                self.env.close()
+            except Exception:
+                logger.error("Failed to close inference environment", exc_info=True)
 
     def _run_episode_with_retries(
         self,
@@ -216,6 +227,16 @@ class InferenceRunner:
                     observation=observation,
                 )
                 if result is not None:
+                    logger.info(
+                        "Episode %d finished reason=%s steps=%d attempts=%d "
+                        "score=%s:%s",
+                        episode_index,
+                        result.termination_reason,
+                        result.steps,
+                        result.attempts,
+                        result.our_score,
+                        result.their_score,
+                    )
                     return result
                 last_error = RunnerInfrastructureError(
                     "Environment returned reset_needed during step"
@@ -269,7 +290,7 @@ class InferenceRunner:
                 counts = action_counts.setdefault(agent_id, {})
                 counts[action_name] = counts.get(action_name, 0) + 1
             if self.trace_actions:
-                logger.info(
+                logger.debug(
                     "Episode %d step %d actions=%s decision_latency_seconds=%.6f",
                     episode_index,
                     steps,
@@ -282,7 +303,14 @@ class InferenceRunner:
                 raise RunnerInfrastructureError("Environment step failed") from exc
             steps += 1
             for agent_id, reward in rewards.items():
-                reward_totals[agent_id] = reward_totals.get(agent_id, 0.0) + float(reward)
+                try:
+                    value = float(reward)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring malformed reward for agent %s: %r", agent_id, reward
+                    )
+                    continue
+                reward_totals[agent_id] = reward_totals.get(agent_id, 0.0) + value
 
             if _has_reset_needed(infos):
                 return None
@@ -328,6 +356,7 @@ def execute_inference(
     policy = MultiAgentPolicyAdapter.from_loaded_bundle(
         loaded,
         deterministic=config.deterministic,
+        fallback_on_error=config.fallback_on_policy_error,
     )
     logger.info(
         "Loaded inference model=%s version=%s source=%s git_commit=%s "

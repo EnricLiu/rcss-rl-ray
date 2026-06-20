@@ -36,6 +36,7 @@ class InferenceConfig(BaseModel):
     )
     device: Literal["auto", "cpu", "cuda"] = "auto"
     deterministic: bool | None = None
+    fallback_on_policy_error: bool = True
     episodes: int = Field(default=1, ge=1)
     seed: int = 0
     max_episode_retries: int = Field(default=0, ge=0)
