@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from numbers import Integral
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import numpy as np
 from gymnasium import spaces
@@ -72,7 +77,11 @@ def controlled_agent_ids(env_config: EnvConfig) -> tuple[int, ...]:
     return agent_ids
 
 
-def build_rl_module_spec(agent_ids: Iterable[int]) -> MultiRLModuleSpec:
+def build_rl_module_spec(
+    agent_ids: Iterable[int],
+    *,
+    initial_module_checkpoint: str | Path | None = None,
+) -> MultiRLModuleSpec:
     normalized_agent_ids_list: list[int] = []
     for agent_id in agent_ids:
         policy_id_for_agent(agent_id)
@@ -87,7 +96,24 @@ def build_rl_module_spec(agent_ids: Iterable[int]) -> MultiRLModuleSpec:
     if not normalized_agent_ids:
         raise ValueError("At least one controlled agent id is required")
 
-    def _module_spec() -> RLModuleSpec:
+    checkpoint_root = (
+        None
+        if initial_module_checkpoint is None
+        else Path(initial_module_checkpoint).resolve()
+    )
+    if checkpoint_root is not None and not checkpoint_root.is_dir():
+        raise ValueError(
+            f"Warm-start MultiRLModule checkpoint is not a directory: {checkpoint_root}"
+        )
+
+    def _module_spec(agent_id: int) -> RLModuleSpec:
+        module_id = policy_id_for_agent(agent_id)
+        load_state_path = None
+        if checkpoint_root is not None:
+            leaf_path = checkpoint_root / module_id
+            if not leaf_path.is_dir():
+                raise ValueError(f"Warm-start checkpoint is missing module {module_id!r}")
+            load_state_path = leaf_path.as_posix()
         return RLModuleSpec(
             module_class=RCSSPPOTorchRLModule,
             observation_space=spaces.Box(
@@ -101,11 +127,12 @@ def build_rl_module_spec(agent_ids: Iterable[int]) -> MultiRLModuleSpec:
                 fcnet_activation="relu",
                 vf_share_layers=True,
             ),
+            load_state_path=load_state_path,
         )
 
     return MultiRLModuleSpec(
         rl_module_specs={
-            policy_id_for_agent(agent_id): _module_spec()
+            policy_id_for_agent(agent_id): _module_spec(agent_id)
             for agent_id in normalized_agent_ids
         }
     )
@@ -159,7 +186,12 @@ def build_ppo_config(
             entropy_coeff=train_cfg.entropy_coeff,
             clip_param=train_cfg.clip_param,
         )
-        .rl_module(rl_module_spec=build_rl_module_spec(agent_ids))
+        .rl_module(
+            rl_module_spec=build_rl_module_spec(
+                agent_ids,
+                initial_module_checkpoint=train_cfg.warm_start_module_checkpoint,
+            )
+        )
         .callbacks(callbacks_class)
         .framework("torch")
         .multi_agent(
@@ -288,6 +320,81 @@ def init_ray(train_cfg: TrainConfig) -> None:
     ray.init(**init_kwargs)
 
 
+def _checkpoint_uri(checkpoint: Any) -> str | None:
+    if checkpoint is None:
+        return None
+    path = getattr(checkpoint, "path", None)
+    return str(path if path is not None else checkpoint)
+
+
+def write_best_checkpoint_metadata(
+    *,
+    checkpoint_uri: str,
+    experiment: str,
+    trial_id: str,
+    metric: str,
+    metric_value: float | None,
+    training_iteration: int,
+    metric_mode: str = "max",
+) -> Path:
+    """Write a small local pointer to the best checkpoint of an experiment."""
+    if metric_mode not in {"min", "max"}:
+        raise ValueError(f"Unsupported checkpoint metric mode: {metric_mode!r}")
+    if "://" in checkpoint_uri:
+        raise ValueError("best checkpoint metadata only supports local paths")
+
+    checkpoint_path = Path(checkpoint_uri).resolve()
+    if len(checkpoint_path.parents) < 2:
+        raise ValueError(f"Cannot derive experiment directory from {checkpoint_uri!r}")
+    output = checkpoint_path.parents[1] / "best_checkpoint.json"
+    payload = {
+        "experiment": experiment,
+        "trial_id": trial_id,
+        "checkpoint_uri": checkpoint_uri,
+        "metric": metric,
+        "metric_value": metric_value,
+        "metric_mode": metric_mode,
+        "training_iteration": training_iteration,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, output)
+    return output
+
+
+def _record_best_checkpoint(
+    *,
+    checkpoint: Any,
+    train_cfg: TrainConfig,
+    trial_id: str,
+    metric_value: Any,
+    training_iteration: Any,
+) -> None:
+    checkpoint_uri = _checkpoint_uri(checkpoint)
+    if checkpoint_uri is None:
+        logger.warning("Best Tune result has no checkpoint; metadata was not written")
+        return
+    try:
+        output = write_best_checkpoint_metadata(
+            checkpoint_uri=checkpoint_uri,
+            experiment=train_cfg.experiment_name,
+            trial_id=trial_id,
+            metric=train_cfg.metric,
+            metric_value=None if metric_value is None else float(metric_value),
+            training_iteration=int(training_iteration or 0),
+            metric_mode=train_cfg.mode,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("Could not write best_checkpoint.json: %s", exc)
+        return
+    logger.info("Wrote best checkpoint metadata: %s", output)
+
+
 def log_best_result(results: Any, train_cfg: TrainConfig) -> None:
     if hasattr(results, "errors"):
         if results.errors:
@@ -307,6 +414,18 @@ def log_best_result(results: Any, train_cfg: TrainConfig) -> None:
             train_cfg.mode,
             best.metrics.get(train_cfg.metric),
             best.checkpoint,
+        )
+        _record_best_checkpoint(
+            checkpoint=best.checkpoint,
+            train_cfg=train_cfg,
+            trial_id=str(
+                best.metrics.get(
+                    "trial_id",
+                    PurePosixPath(urlsplit(str(best.path)).path).name,
+                )
+            ),
+            metric_value=best.metrics.get(train_cfg.metric),
+            training_iteration=best.metrics.get("training_iteration", 0),
         )
         return
 
@@ -333,6 +452,13 @@ def log_best_result(results: Any, train_cfg: TrainConfig) -> None:
         train_cfg.mode,
         metric_value,
         checkpoint,
+    )
+    _record_best_checkpoint(
+        checkpoint=checkpoint,
+        train_cfg=train_cfg,
+        trial_id=str(getattr(best_trial, "trial_id", "unknown")),
+        metric_value=metric_value,
+        training_iteration=best_trial.last_result.get("training_iteration", 0),
     )
 
 

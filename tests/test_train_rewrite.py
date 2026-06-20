@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -29,6 +31,7 @@ from train.train import (
     parse_args,
     policy_id_for_agent,
     run_training,
+    write_best_checkpoint_metadata,
 )
 from train.curriculum.shooting import ShootingCurriculum
 from train.curriculum.dummy_marl import DummyMarlCurriculum
@@ -46,6 +49,27 @@ class _FakeEpisode:
 
     def last_info_for(self, agent_id: int) -> dict[str, Any] | None:
         return self._infos.get(agent_id)
+
+
+def test_write_best_checkpoint_metadata_is_machine_readable(tmp_path) -> None:
+    checkpoint = tmp_path / "experiment" / "trial-1" / "checkpoint_000007"
+    checkpoint.mkdir(parents=True)
+
+    output = write_best_checkpoint_metadata(
+        checkpoint_uri=str(checkpoint),
+        experiment="experiment",
+        trial_id="trial-1",
+        metric="checkpoint_score",
+        metric_value=3.5,
+        training_iteration=7,
+    )
+
+    assert output == tmp_path / "experiment" / "best_checkpoint.json"
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["checkpoint_uri"] == str(checkpoint)
+    assert payload["trial_id"] == "trial-1"
+    assert payload["metric_value"] == pytest.approx(3.5)
+    assert payload["training_iteration"] == 7
 
 
 def test_build_train_config_parses_tune_and_aim_flags() -> None:
@@ -141,6 +165,20 @@ def test_restore_and_resume_from_checkpoint_are_mutually_exclusive() -> None:
                     "/tmp/exp",
                     "--resume-from-checkpoint",
                     "/tmp/checkpoint_000123",
+                ]
+            )
+        )
+
+
+def test_warm_start_and_algorithm_restore_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        build_train_config(
+            parse_args(
+                [
+                    "--restore",
+                    "/tmp/experiment",
+                    "--warm-start-module-checkpoint",
+                    "/tmp/migration/multi_rl_module",
                 ]
             )
         )

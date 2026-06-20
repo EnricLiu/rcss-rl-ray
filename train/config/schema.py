@@ -25,6 +25,7 @@ class RuntimeConfig(BaseModel):
     storage_path: str | None = None
     restore_path: str | None = None
     resume_from_checkpoint: str | None = None
+    warm_start_module_checkpoint: str | None = None
     timestamp_experiment_name: bool = True
     num_samples: int = Field(default=1, ge=1)
     metric: str = "checkpoint_score"
@@ -113,6 +114,7 @@ class TrainConfig(BaseModel):
                 "storage_path",
                 "restore_path",
                 "resume_from_checkpoint",
+                "warm_start_module_checkpoint",
                 "timestamp_experiment_name",
                 "num_samples",
                 "metric",
@@ -253,8 +255,17 @@ class TrainConfig(BaseModel):
 
     @model_validator(mode="after")
     def _finalize_defaults(self) -> TrainConfig:
-        if self.runtime.restore_path is not None and self.runtime.resume_from_checkpoint is not None:
-            raise ValueError("--restore and --resume-from-checkpoint are mutually exclusive")
+        initialization_modes = {
+            "restore": self.runtime.restore_path,
+            "resume_from_checkpoint": self.runtime.resume_from_checkpoint,
+            "warm_start_module_checkpoint": self.runtime.warm_start_module_checkpoint,
+        }
+        selected_modes = [name for name, value in initialization_modes.items() if value is not None]
+        if len(selected_modes) > 1:
+            raise ValueError(
+                "restore, resume-from-checkpoint, and warm-start-module-checkpoint "
+                "are mutually exclusive"
+            )
 
         if self.runtime.resume_from_checkpoint is not None and self.runtime.num_samples != 1:
             raise ValueError("--resume-from-checkpoint only supports a single trial (num_samples=1)")
@@ -285,6 +296,7 @@ class TrainConfig(BaseModel):
             "storage_path": self.storage_path,
             "restore_path": self.restore_path,
             "resume_from_checkpoint": self.resume_from_checkpoint,
+            "warm_start_module_checkpoint": self.warm_start_module_checkpoint,
             "timestamp_experiment_name": self.timestamp_experiment_name,
             "num_samples": self.num_samples,
             "metric": self.metric,
@@ -379,6 +391,10 @@ class TrainConfig(BaseModel):
     @property
     def resume_from_checkpoint(self) -> str | None:
         return self.runtime.resume_from_checkpoint
+
+    @property
+    def warm_start_module_checkpoint(self) -> str | None:
+        return self.runtime.warm_start_module_checkpoint
 
     @property
     def timestamp_experiment_name(self) -> bool:

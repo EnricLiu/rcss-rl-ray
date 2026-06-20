@@ -45,6 +45,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--storage-path", type=str, default=argparse.SUPPRESS)
     parser.add_argument("--restore", dest="restore_path", type=str, default=argparse.SUPPRESS)
     parser.add_argument("--resume-from-checkpoint", dest="resume_from_checkpoint", type=str, default=argparse.SUPPRESS)
+    parser.add_argument(
+        "--warm-start-module-checkpoint",
+        dest="warm_start_module_checkpoint",
+        type=str,
+        default=argparse.SUPPRESS,
+    )
     parser.add_argument("--disable-aim", dest="enable_aim", action="store_false", default=argparse.SUPPRESS)
     parser.add_argument("--aim-repo", type=str, default=argparse.SUPPRESS)
     parser.add_argument("--aim-experiment-name", type=str, default=argparse.SUPPRESS)
@@ -130,4 +136,3 @@ def build_train_config(args: argparse.Namespace) -> TrainConfig:
     if config_path is not None:
         return load_train_config(config_path, overrides=overrides)
     return TrainConfig.model_validate(overrides)
-
