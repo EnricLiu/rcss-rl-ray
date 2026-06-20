@@ -17,6 +17,10 @@ class ShootingCurriculum(CurriculumMixin):
         self.__reward = ShootingReward(config)
 
     @override
+    def agent_unums(self) -> tuple[int, ...]:
+        return (self.config.agent_unum,)
+
+    @override
     def make_schema(self) -> GameServerSchema:
         ret = GameServerSchema(
             teams=self.__make_teams(),

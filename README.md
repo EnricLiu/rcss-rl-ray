@@ -11,13 +11,13 @@ flowchart TB
         direction TB
         Tune["Tune Tuner\n(single trial / future search)"]
         Curriculum["Curriculum Factory\n(ShootingCurriculum)"]
-        PPO["PPOConfig\nRLModule + action mask"]
+        PPO["PPOConfig\nper-agent RLModules + action mask"]
         Aim["AimLoggerCallback\n(optional AimStack metrics)"]
         Tune --> Curriculum --> PPO
         Tune -. metrics .-> Aim
     end
 
-    subgraph Model ["Neural Network (models/fcnet.py)"]
+    subgraph Model ["Per-agent Neural Network (models/fcnet.py)"]
         Backbone["Shared Backbone\n(2×256 FC layers)"]
         PolicyHead["Policy Head"]
         ValueHead["Value Head"]
@@ -81,4 +81,3 @@ flowchart TB
 - **Hybrid Action Space** — discrete action-type selection combined with continuous parameters
 - **gRPC** — high-performance RPC for real-time agent–simulator communication
 - **Gymnasium MultiAgentEnv** — standard multi-agent environment interface
-

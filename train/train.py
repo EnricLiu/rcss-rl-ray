@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from numbers import Integral
 from typing import Any, cast
 
 import numpy as np
@@ -28,16 +30,28 @@ from train.models.fcnet import RCSSPPOTorchRLModule
 logger = logging.getLogger(__name__)
 
 ENV_NAME = "rcss_multi_agent"
-DEFAULT_POLICY_ID = "rcss_policy"
+POLICY_ID_PREFIX = "rcss_policy"
 
 
-def default_policy_mapping_fn(
+def policy_id_for_agent(agent_id: Any) -> str:
+    """Return the stable policy/module id owned by one RCSS agent."""
+    if isinstance(agent_id, bool) or not isinstance(agent_id, Integral):
+        raise ValueError(
+            f"RCSS agent ids must be integer uniform numbers, got {agent_id!r}"
+        )
+    unum = int(agent_id)
+    if unum <= 0:
+        raise ValueError(f"RCSS agent uniform numbers must be positive, got {unum}")
+    return f"{POLICY_ID_PREFIX}_{unum}"
+
+
+def independent_policy_mapping_fn(
     agent_id: Any,
     episode: Any,
     worker: Any = None,
     **kwargs: Any,
 ) -> str:
-    return DEFAULT_POLICY_ID
+    return policy_id_for_agent(agent_id)
 
 
 def build_callbacks_class(train_cfg: TrainConfig):
@@ -48,24 +62,51 @@ def build_callbacks_class(train_cfg: TrainConfig):
     return ConfiguredRCSSCallbacks
 
 
-def build_rl_module_spec() -> MultiRLModuleSpec:
-    module_spec = RLModuleSpec(
-        module_class=RCSSPPOTorchRLModule,
-        observation_space=spaces.Box(
-            low=np.full((observation.dim(),), -np.inf, dtype=np.float32),
-            high=np.full((observation.dim(),), np.inf, dtype=np.float32),
-            dtype=np.float32,
-        ),
-        action_space=Action.space_schema(),
-        model_config=DefaultModelConfig(
-            fcnet_hiddens=[256, 256],
-            fcnet_activation="relu",
-            vf_share_layers=True,
-        ),
-    )
+def controlled_agent_ids(env_config: EnvConfig) -> tuple[int, ...]:
+    """Resolve the stable set of learning-agent unums from the curriculum."""
+    agent_ids = tuple(sorted(env_config.curriculum.agent_unums()))
+    if not agent_ids:
+        raise ValueError("The curriculum room schema does not contain any SSP agents")
+    if len(agent_ids) != len(set(agent_ids)):
+        raise ValueError(f"The curriculum contains duplicate agent ids: {agent_ids}")
+    return agent_ids
+
+
+def build_rl_module_spec(agent_ids: Iterable[int]) -> MultiRLModuleSpec:
+    normalized_agent_ids_list: list[int] = []
+    for agent_id in agent_ids:
+        policy_id_for_agent(agent_id)
+        normalized_agent_ids_list.append(int(agent_id))
+
+    if len(normalized_agent_ids_list) != len(set(normalized_agent_ids_list)):
+        raise ValueError(
+            f"Controlled agent ids must be unique, got {normalized_agent_ids_list}"
+        )
+
+    normalized_agent_ids = tuple(sorted(normalized_agent_ids_list))
+    if not normalized_agent_ids:
+        raise ValueError("At least one controlled agent id is required")
+
+    def _module_spec() -> RLModuleSpec:
+        return RLModuleSpec(
+            module_class=RCSSPPOTorchRLModule,
+            observation_space=spaces.Box(
+                low=np.full((observation.dim(),), -np.inf, dtype=np.float32),
+                high=np.full((observation.dim(),), np.inf, dtype=np.float32),
+                dtype=np.float32,
+            ),
+            action_space=Action.space_schema(),
+            model_config=DefaultModelConfig(
+                fcnet_hiddens=[256, 256],
+                fcnet_activation="relu",
+                vf_share_layers=True,
+            ),
+        )
+
     return MultiRLModuleSpec(
         rl_module_specs={
-            DEFAULT_POLICY_ID: module_spec,
+            policy_id_for_agent(agent_id): _module_spec()
+            for agent_id in normalized_agent_ids
         }
     )
 
@@ -82,6 +123,8 @@ def build_ppo_config(
     register_env(ENV_NAME, _env_creator)
 
     callbacks_class = build_callbacks_class(train_cfg)
+    agent_ids = controlled_agent_ids(env_config)
+    policy_ids = {policy_id_for_agent(agent_id) for agent_id in agent_ids}
 
     config = (
         PPOConfig()
@@ -116,12 +159,12 @@ def build_ppo_config(
             entropy_coeff=train_cfg.entropy_coeff,
             clip_param=train_cfg.clip_param,
         )
-        .rl_module(rl_module_spec=build_rl_module_spec())
+        .rl_module(rl_module_spec=build_rl_module_spec(agent_ids))
         .callbacks(callbacks_class)
         .framework("torch")
         .multi_agent(
-            policies={DEFAULT_POLICY_ID},
-            policy_mapping_fn=default_policy_mapping_fn,
+            policies=policy_ids,
+            policy_mapping_fn=independent_policy_mapping_fn,
         )
     )
 

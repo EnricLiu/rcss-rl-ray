@@ -6,7 +6,7 @@ from typing import Any, cast
 import torch
 import pytest
 from ray.rllib.core.columns import Columns
-from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
+from ray.rllib.core.rl_module.multi_rl_module import MultiRLModule, MultiRLModuleSpec
 
 from rcss_env.action import Action
 from rcss_env.action_mask import ActionMaskResolver
@@ -15,7 +15,6 @@ from train.callbacks import AimCallback, RCSSCallbacks
 from train.factory import build_env_config
 from train.models.fcnet import RCSSPPOTorchRLModule
 from train.train import (
-    DEFAULT_POLICY_ID,
     ENV_NAME,
     build_callbacks_class,
     build_rl_module_spec,
@@ -25,7 +24,10 @@ from train.train import (
     build_train_config,
     build_tune_callbacks,
     build_tune_config,
+    controlled_agent_ids,
+    independent_policy_mapping_fn,
     parse_args,
+    policy_id_for_agent,
     run_training,
 )
 from train.curriculum.shooting import ShootingCurriculum
@@ -338,17 +340,19 @@ def test_build_ppo_config_uses_new_api_stack_and_rlmodule() -> None:
     assert ppo_config.num_cpus_per_learner == cfg.num_cpus_per_learner
     assert ppo_config.num_gpus_per_learner == cfg.num_gpus_per_learner
     assert ppo_config.model.get("custom_model") is None
-    assert set(ppo_config.policies) == {DEFAULT_POLICY_ID}
-    assert ppo_config.policy_mapping_fn(1, None, None) == DEFAULT_POLICY_ID
+    policy_id = policy_id_for_agent(cfg.agent_unum)
+    assert set(ppo_config.policies) == {policy_id}
+    assert ppo_config.policy_mapping_fn(cfg.agent_unum, None, None) == policy_id
     assert isinstance(ppo_config.rl_module_spec, MultiRLModuleSpec)
-    assert ppo_config.rl_module_spec.rl_module_specs[DEFAULT_POLICY_ID].module_class is RCSSPPOTorchRLModule
+    assert ppo_config.rl_module_spec.rl_module_specs[policy_id].module_class is RCSSPPOTorchRLModule
     assert issubclass(ppo_config.callbacks_class, RCSSCallbacks)
     assert ppo_config.callbacks_class.CHECKPOINT_SCORE_ATTRIBUTE == cfg.checkpoint_metric
     assert ppo_config.callbacks_class.CHECKPOINT_SCORE_SOURCE_ATTRIBUTE == cfg.checkpoint_source_metric
 
 
 def test_rlmodule_applies_discrete_action_mask_only() -> None:
-    spec = build_rl_module_spec().rl_module_specs[DEFAULT_POLICY_ID]
+    policy_id = policy_id_for_agent(1)
+    spec = build_rl_module_spec([1]).rl_module_specs[policy_id]
     module = spec.build()
     obs_dim = spec.observation_space.shape[0]
     batch = {
@@ -373,6 +377,82 @@ def test_rlmodule_applies_discrete_action_mask_only() -> None:
     assert logits[1, 0] < -1.0e8
     assert logits[1, 3] < -1.0e8
     assert torch.all(logits[:, Action.n_actions():] > -1.0e8)
+
+
+def test_dummy_marl_builds_one_independent_policy_per_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = build_train_config(
+        parse_args(
+            [
+                "-f",
+                "configs/train/dummy_marl_11v11.yaml",
+                "--ray-address",
+                "local",
+                "--disable-aim",
+                "--no-timestamp-experiment-name",
+            ]
+        )
+    )
+    env_cfg = build_env_config(cfg)
+    monkeypatch.setattr(
+        env_cfg.curriculum,
+        "make_schema",
+        lambda: pytest.fail("Policy topology discovery must not sample a room schema"),
+    )
+    agent_ids = controlled_agent_ids(env_cfg)
+    ppo_config = build_ppo_config(cfg, env_cfg)
+
+    expected_policy_ids = {policy_id_for_agent(unum) for unum in range(1, 12)}
+    assert agent_ids == tuple(range(1, 12))
+    assert set(ppo_config.policies) == expected_policy_ids
+    assert set(ppo_config.rl_module_spec.rl_module_specs) == expected_policy_ids
+    assert len(
+        {
+            id(spec)
+            for spec in ppo_config.rl_module_spec.rl_module_specs.values()
+        }
+    ) == 11
+    for unum in agent_ids:
+        assert independent_policy_mapping_fn(unum, None, None) == policy_id_for_agent(unum)
+
+
+def test_independent_policy_specs_build_distinct_parameter_storage() -> None:
+    multi_module = build_rl_module_spec([1, 2]).build()
+    module_1 = multi_module[policy_id_for_agent(1)]
+    module_2 = multi_module[policy_id_for_agent(2)]
+
+    assert module_1 is not module_2
+    assert next(module_1.parameters()).data_ptr() != next(module_2.parameters()).data_ptr()
+
+
+def test_independent_modules_survive_checkpoint_round_trip(tmp_path) -> None:
+    multi_module = build_rl_module_spec([1, 2]).build()
+    checkpoint_path = tmp_path / "rl_module"
+    multi_module.save_to_path(checkpoint_path)
+
+    restored = MultiRLModule.from_checkpoint(checkpoint_path)
+
+    assert set(restored.keys()) == {policy_id_for_agent(1), policy_id_for_agent(2)}
+    for unum in (1, 2):
+        module_id = policy_id_for_agent(unum)
+        assert (checkpoint_path / module_id / "module_state.pkl").is_file()
+        source_state = multi_module[module_id].state_dict()
+        restored_state = restored[module_id].state_dict()
+        assert source_state.keys() == restored_state.keys()
+        for key in source_state:
+            torch.testing.assert_close(source_state[key], restored_state[key])
+
+
+def test_policy_id_for_agent_rejects_non_unum_ids() -> None:
+    for agent_id in (True, 0, -1, "1", 1.5):
+        with pytest.raises(ValueError, match="agent|uniform"):
+            policy_id_for_agent(agent_id)
+
+
+def test_build_rl_module_spec_rejects_duplicate_agent_ids() -> None:
+    with pytest.raises(ValueError, match="unique"):
+        build_rl_module_spec([1, 1])
 
 
 def test_build_tune_config_and_run_config_without_aim() -> None:
@@ -421,7 +501,7 @@ def test_build_tune_callbacks_passes_train_config_to_aim() -> None:
                 "--lr",
                 "0.00005",
                 "--aim-metrics",
-                "checkpoint_score,learners/rcss_policy/total_loss",
+                "checkpoint_score,learners/rcss_policy_1/total_loss",
             ]
         )
     )
@@ -434,7 +514,7 @@ def test_build_tune_callbacks_passes_train_config_to_aim() -> None:
     assert callbacks[0]._run_params["lr"] == pytest.approx(0.00005)
     assert callbacks[0]._run_params["aim_metrics"] == (
         "checkpoint_score",
-        "learners/rcss_policy/total_loss",
+        "learners/rcss_policy_1/total_loss",
     )
 
 
@@ -455,7 +535,7 @@ def test_aim_callback_writes_run_params_through_aim_item_api(
         repo="/tmp/aim",
         run_params={
             "lr": 5e-5,
-            "aim_metrics": ("checkpoint_score", "learners/rcss_policy/total_loss"),
+            "aim_metrics": ("checkpoint_score", "learners/rcss_policy_1/total_loss"),
             "nested": {"enabled": True, "items": (1, 2)},
         },
     )
@@ -466,7 +546,7 @@ def test_aim_callback_writes_run_params_through_aim_item_api(
     assert fake_run["lr"] == pytest.approx(5e-5)
     assert fake_run["aim_metrics"] == [
         "checkpoint_score",
-        "learners/rcss_policy/total_loss",
+        "learners/rcss_policy_1/total_loss",
     ]
     assert fake_run["nested"] == {"enabled": True, "items": [1, 2]}
 
@@ -644,5 +724,3 @@ def test_callbacks_aggregate_reward_breakdown_into_custom_metrics() -> None:
     assert episode.custom_metrics["reward_agent_to_ball_shaping_total"] == pytest.approx(0.3)
     assert episode.custom_metrics["reward_agent_to_ball_shaping_per_step"] == pytest.approx(0.15)
     assert episode.custom_metrics["reward_time_decay_total"] == pytest.approx(-0.02)
-
-

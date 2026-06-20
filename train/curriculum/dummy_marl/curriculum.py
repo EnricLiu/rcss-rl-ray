@@ -30,6 +30,10 @@ class DummyMarlCurriculum(CurriculumMixin):
         self.__reward = DummyRewardFn()
 
     @override
+    def agent_unums(self) -> tuple[int, ...]:
+        return tuple(range(1, 12))
+
+    @override
     def make_schema(self) -> GameServerSchema:
         return GameServerSchema(
             teams=self.__make_teams(),

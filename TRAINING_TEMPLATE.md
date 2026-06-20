@@ -47,7 +47,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 │                  train/train.py (Entry Point)            │
 │  1. Parse CLI args → TrainConfig                         │
 │  2. Build ShootingCurriculum → EnvConfig                 │
-│  3. Register RCSSEnv + RCSSPPOTorchRLModule              │
+│  3. Register RCSSEnv + per-agent PPO RLModules           │
 │  4. Build PPOConfig and launch ray.tune.Tuner            │
 │  5. Attach AimLoggerCallback when enabled                │
 └──────────────┬───────────────────────────────────────────┘
@@ -81,7 +81,7 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 | **EnvConfig**       | `rcss_env/config.py`    | Env connection config (gRPC + allocator + curriculum) |
 | **RCSSEnv**         | `rcss_env/env.py`       | MultiAgentEnv: reset/step/close lifecycle         |
 | **ShootingCurriculum** | `train/curriculum/shooting/` | Builds room schema and reward for shooting tasks |
-| **RCSSPPOTorchRLModule** | `train/models/fcnet.py` | PPO RLModule: FC trunk -> policy/value heads + discrete action mask |
+| **RCSSPPOTorchRLModule** | `train/models/fcnet.py` | Per-agent PPO RLModule: FC trunk -> policy/value heads + discrete action mask |
 | **RCSSCallbacks**   | `train/callbacks.py`    | Episode metrics + mirrored top-level checkpoint score logging |
 | **Action**          | `rcss_env/action.py`    | Hybrid discrete+continuous -> protobuf mapping    |
 | **Observation**     | `rcss_env/obs.py`       | WorldModel -> 144-d normalised feature vector     |
@@ -176,6 +176,8 @@ python -m train.train --restore /mnt/ray-results/shooting-ppo
 - `--restore` and `--resume-from-checkpoint` are different workflows and are mutually exclusive:
   - `--restore` resumes a **Tune experiment state** (unfinished/errored trials in that experiment).
   - `--resume-from-checkpoint` starts a **new Tune experiment** from a specific RLlib checkpoint directory such as `checkpoint_000099`.
-- The training path currently supports PPO on RLlib's new API stack with a custom `DefaultPPOTorchRLModule` subclass for action masking.
+- The training path uses PPO on RLlib's new API stack. Every controlled uniform number maps to an independent `rcss_policy_<unum>` module with its own parameters and optimizer state; the custom `DefaultPPOTorchRLModule` subclass applies action masking.
+- Independent 11v11 policies use roughly 11 times the model and optimizer memory of a shared policy. Samples are also partitioned by module, so monitor each `learners/rcss_policy_<unum>/...` metric and increase the total train batch if a policy receives too few samples per update.
+- Checkpoints created before the per-agent module split contain one shared `rcss_policy` and cannot be resumed directly into the independent-module topology. They require an explicit weight-cloning migration into a new experiment.
 - Aim logging is enabled by default. The project declares `aim` for Python versions below 3.13 because Aim's native dependency is not available for CPython 3.13 from PyPI.
 - `ShootingReward.compute()` uses full-information `truth` world models where available, combining sparse score deltas, non-goal out-of-bounds penalty, ball-to-goal progress shaping, and a small cycle-based time decay.
