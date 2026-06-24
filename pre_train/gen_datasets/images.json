@@ -1,0 +1,95 @@
+[
+  {
+    "type": "ssp",
+    "images": {
+      "CLSFramework": [
+        "CLSFramework/soccer-simulation-proxy"
+
+      ],
+      "Cyrus2D": [
+        "Cyrus2D/SoccerSimulationProxy"
+      ]
+    }
+  },
+  {
+    "type": "helios",
+    "images": {
+      "Cyrus2D": [
+        "Cyrus2D/CYRUS2023",
+        "Cyrus2D/cyrus2024"
+      ],
+      "Damavand": [
+        "Damavand/Damavand2023"
+      ],
+      "EMPEROR": [
+        "EMPEROR/EMPEROR2023"
+      ],
+      "FRA-UNIted": [
+        "FRA-UNIted/FRA-UNIted2023",
+        "FRA-UNIted/FRA-UNIted2025",
+        "FRA-UNIted/fra-united2024"
+      ],
+      "HELIOS": [
+        "HELIOS/HELIOS2023",
+        "HELIOS/HELIOS2025",
+        "HELIOS/helios-base",
+        "HELIOS/helios2024"
+      ],
+      "Hades2D": [
+        "Hades2D/Hades2D2023"
+      ],
+      "Hermes2D": [
+        "Hermes2D/Hermes2D2023"
+      ],
+      "ITAndroids": [
+        "ITAndroids/ITAndroids2023",
+        "ITAndroids/ITAndroids2025",
+        "ITAndroids/itandroids2024"
+      ],
+      "Oxsy": [
+        "Oxsy/Oxsy2025",
+        "Oxsy/oxsy2024"
+      ],
+      "R3CESBU": [
+        "R3CESBU/R3CESBU2023"
+      ],
+      "RoboCIn": [
+        "RoboCIn/RoboCIn2023",
+        "RoboCIn/RoboCIn2025",
+        "RoboCIn/robocin2024"
+      ],
+      "RoboTech": [
+        "RoboTech/RoboTech2025"
+      ],
+      "SIRLab": [
+        "SIRLab/SIRLab2025"
+      ],
+      "SRBIAU2D": [
+        "SRBIAU2D/SRBIAU2D2025"
+      ],
+      "The8": [
+        "The8/The82023"
+      ],
+      "TitasdaRobotica": [
+        "TitasdaRobotica/TitasdaRobotica2025"
+      ],
+      "YuShan": [
+        "YuShan/YuShan2023",
+        "YuShan/YuShan2025",
+        "YuShan/yushan2024"
+      ],
+      "aeteam": [
+        "aeteam/aeteam2024"
+      ],
+      "mars": [
+        "mars/mars2024"
+      ],
+      "r2d2": [
+        "r2d2/r2d22024"
+      ],
+      "robo2d": [
+        "robo2d/robo2d2023"
+      ]
+    }
+  }
+]
