@@ -10,6 +10,7 @@ from .config import RcssConfig, TrainerConfig
 from .model import (
     ControlShutdownRequest,
     MetricsConnectionInfo,
+    MetricsConfigResponse,
     MetricsStatusResponse,
     TrainerChangeModeRequest,
     TrainerCheckBallResponse,
@@ -149,3 +150,7 @@ class RcssClient(BaseApiClient):
             key: MetricsConnectionInfo.model_validate(value)
             for key, value in status.items()
         }
+
+    def metrics_config(self) -> MetricsConfigResponse:
+        payload = self._request_payload("GET", self.config.metrics.path_config)
+        return MetricsConfigResponse.model_validate(payload)
