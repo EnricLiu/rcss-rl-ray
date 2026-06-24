@@ -1,4 +1,4 @@
-"""Cycle-indexed coach truth world-model buffer."""
+"""Cycle-indexed world-model buffers."""
 
 from __future__ import annotations
 
@@ -11,16 +11,22 @@ DEFAULT_MAX_TRUTH_CYCLES = 16
 
 
 class TruthWorldModelTimeoutError(RuntimeError):
-    """Raised when a requested coach truth world model is not available."""
+    """Raised when a requested world model is not available."""
 
 
 class TruthWorldModelBuffer:
-    """Asynchronous exact-cycle buffer for coach truth world models."""
+    """Asynchronous exact-cycle buffer for world models."""
 
-    def __init__(self, max_cycles: int = DEFAULT_MAX_TRUTH_CYCLES) -> None:
+    def __init__(
+        self,
+        max_cycles: int = DEFAULT_MAX_TRUTH_CYCLES,
+        *,
+        label: str = "coach truth",
+    ) -> None:
         if max_cycles <= 0:
             raise ValueError("max_cycles must be positive")
         self._max_cycles = max_cycles
+        self._label = label
         self._world_models: dict[int, pb2.WorldModel] = {}
         self._latest_cycle: int | None = None
         self._condition = asyncio.Condition()
@@ -58,7 +64,7 @@ class TruthWorldModelBuffer:
         except asyncio.TimeoutError as exc:
             snapshot = self.snapshot()
             raise TruthWorldModelTimeoutError(
-                f"Timed out waiting for coach truth world model cycle={cycle}; "
+                f"Timed out waiting for {self._label} world model cycle={cycle}; "
                 f"buffered_cycles={snapshot['buffered_cycles']} latest_cycle={snapshot['latest_cycle']}"
             ) from exc
 
@@ -74,6 +80,7 @@ class TruthWorldModelBuffer:
             "buffered_cycles": buffered_cycles,
             "buffer_size": len(buffered_cycles),
             "max_cycles": self._max_cycles,
+            "label": self._label,
         }
 
     def _trim_locked(self) -> None:

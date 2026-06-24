@@ -17,7 +17,7 @@ from gymnasium import spaces
 from ray.util import get_node_ip_address
 from ray.rllib.env import MultiAgentEnv
 
-from schema import GameServerSchema, TeamSide, TeamSchema
+from schema import GameServerSchema, TeamSide, TeamSchema, PolicyKind, TrainerSchema
 from client.room import RoomClient
 from client.base.allocator import AllocatorClient
 from train.curriculum import CurriculumMixin
@@ -124,6 +124,19 @@ class RCSSEnv(MultiAgentEnv):
     @property
     def agent_team_unums(self) -> set[int]:
         return set([agent.unum for agent in self.agent_team.ssp_agents()])
+
+    @property
+    def is_agent_coached(self) -> bool:
+        return (coach := self.agent_team.coach) is not None \
+            and (policy := coach.policy) is not None \
+            and policy.kind == PolicyKind.Agent
+
+    def agent_trainers(self) -> list[TrainerSchema]:
+        if (trainer := self.agent_team.trainer) is None: return []
+        if (policy := trainer.policy) is None: return []
+        if policy.kind != PolicyKind.Agent: return []
+
+        return [trainer]
 
     @property
     def bhv(self) -> NeckViewBhv:
@@ -431,9 +444,14 @@ class RCSSEnv(MultiAgentEnv):
         for player in self.agent_team.ssp_agents():
             player.policy.grpc_host = self.config.grpc.host
             player.policy.grpc_port = self.config.grpc.port
-        if (coach := self.agent_team.coach) is not None:
+        if self.is_agent_coached:
+            coach = self.agent_team.coach
             coach.policy.grpc_host = self.config.grpc.host
             coach.policy.grpc_port = self.config.grpc.port
+
+        for trainer in self.agent_trainers():
+            trainer.policy.grpc_host = self.config.grpc.host
+            trainer.policy.grpc_port = self.config.grpc.port
 
 
     # ------------------------------------------------------------------

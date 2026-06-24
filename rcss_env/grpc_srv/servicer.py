@@ -66,12 +66,14 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_get_action_meta: dict[int, dict[str, Any]] = {}
         self._last_action_send_meta: dict[int, dict[str, Any]] = {}
         self._last_coach_truth_meta: dict[str, Any] = {}
+        self._last_trainer_state_meta: dict[str, Any] = {}
         self._last_need_preprocess: dict[int, bool] = {}
         self._last_bye_meta: dict[int, dict[str, Any]] = {}
         self._last_planner_meta: dict[str, Any] = {}
         self._clients: dict[int, dict[str, Any]] = {}
         self._next_client_id = 1
-        self._truth_buffer = TruthWorldModelBuffer()
+        self._truth_buffer = TruthWorldModelBuffer(label="coach truth")
+        self._trainer_buffer = TruthWorldModelBuffer(label="trainer")
         self._runtime_error: Exception | None = None
 
         self._server_params: pb2.ServerParam | None = None
@@ -142,6 +144,8 @@ class GameServicer(pb2_grpc.GameServicer):
                 for client_id, meta in sorted(self._clients.items())
             },
             "truth_buffer": self._truth_buffer.snapshot(),
+            "trainer_buffer": self._trainer_buffer.snapshot(),
+            "last_trainer_state": dict(self._last_trainer_state_meta),
             "runtime_error": None if self._runtime_error is None else {
                 "type": type(self._runtime_error).__name__,
                 "message": str(self._runtime_error),
@@ -400,9 +404,20 @@ class GameServicer(pb2_grpc.GameServicer):
     async def GetTrainerActions(
         self, request: pb2.State, context: grpc.aio.ServicerContext
     ) -> pb2.TrainerActions:
-        """Handle a GetTrainerActions RPC (currently returns empty actions)."""
-        cycle = request.world_model.cycle if self._has_field(request, "world_model") else -1
-        logger.debug("GetTrainerActions called (cycle=%d)", cycle)
+        """Store the trainer global WorldModel and return empty trainer actions."""
+        if not request.HasField("world_model"):
+            logger.warning("GetTrainerActions received state with no world_model")
+            return pb2.TrainerActions()
+
+        wm = request.world_model
+        await self._trainer_buffer.put(wm)
+        self._last_trainer_state_meta = {
+            "cycle": wm.cycle,
+            "client_id": int(request.register_response.client_id) if self._has_field(request, "register_response") else None,
+            "received_monotonic_s": round(perf_counter(), 6),
+            "game_mode_type": wm.game_mode_type,
+        }
+        logger.debug("GetTrainerActions stored trainer world model (cycle=%d)", wm.cycle)
         return pb2.TrainerActions()
 
     async def SendInitMessage(
@@ -587,6 +602,25 @@ class GameServicer(pb2_grpc.GameServicer):
     async def __discard_truth_before(self, cycle: int) -> None:
         await self._truth_buffer.discard_before(cycle)
 
+    async def __fetch_trainer_world_model(
+        self,
+        cycle: int,
+        timeout: float,
+    ) -> pb2.WorldModel:
+        """Await the exact-cycle trainer global WorldModel."""
+        logger.debug(
+            "__fetch_trainer_world_model: waiting for cycle=%d timeout=%.1fs snapshot=%s",
+            cycle,
+            timeout,
+            self._trainer_buffer.snapshot(),
+        )
+        state = await self._trainer_buffer.get(cycle, timeout=timeout)
+        logger.debug("__fetch_trainer_world_model: received cycle=%d", state.cycle)
+        return state
+
+    async def __discard_trainer_before(self, cycle: int) -> None:
+        await self._trainer_buffer.discard_before(cycle)
+
     # ------------------------------------------------------------------
     # Synchronous bridge (called from the RL thread)
     # ------------------------------------------------------------------
@@ -652,6 +686,21 @@ class GameServicer(pb2_grpc.GameServicer):
         """Drop buffered coach truth world models older than *cycle*."""
         self.__run_coro(self.__discard_truth_before(cycle), timeout=ACTION_SEND_TIMEOUT_S)
 
+    def fetch_trainer_world_model(
+        self,
+        cycle: int,
+        timeout: float = STATE_GET_TIMEOUT_S,
+    ) -> pb2.WorldModel:
+        """Block until the exact-cycle trainer global WorldModel is available."""
+        return self.__run_coro(
+            self.__fetch_trainer_world_model(cycle=cycle, timeout=timeout),
+            timeout=timeout + 0.5,
+        )
+
+    def discard_trainer_before(self, cycle: int) -> None:
+        """Drop buffered trainer world models older than *cycle*."""
+        self.__run_coro(self.__discard_trainer_before(cycle), timeout=ACTION_SEND_TIMEOUT_S)
+
     def last_state(self, unum: int) -> pb2.State | None:
         """Return the last fetched State for a unum, or None."""
         return self._states.get(unum)
@@ -684,12 +733,14 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_get_action_meta.clear()
         self._last_action_send_meta.clear()
         self._last_coach_truth_meta.clear()
+        self._last_trainer_state_meta.clear()
         self._last_need_preprocess.clear()
         self._last_bye_meta.clear()
         self._last_planner_meta.clear()
         self._clients.clear()
         self._next_client_id = 1
         await self._truth_buffer.reset()
+        await self._trainer_buffer.reset()
         self._runtime_error = None
         self._states_queues.clear()
         self._action_queues.clear()
@@ -716,12 +767,14 @@ class GameServicer(pb2_grpc.GameServicer):
             self._last_get_action_meta.clear()
             self._last_action_send_meta.clear()
             self._last_coach_truth_meta.clear()
+            self._last_trainer_state_meta.clear()
             self._last_need_preprocess.clear()
             self._last_bye_meta.clear()
             self._last_planner_meta.clear()
             self._clients.clear()
             self._next_client_id = 1
-            self._truth_buffer = TruthWorldModelBuffer()
+            self._truth_buffer = TruthWorldModelBuffer(label="coach truth")
+            self._trainer_buffer = TruthWorldModelBuffer(label="trainer")
             self._runtime_error = None
             self._states_queues.clear()
             self._action_queues.clear()
