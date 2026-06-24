@@ -11,6 +11,7 @@ from ._base import SchemaModel
 from .coach import CoachSchema
 from .player import PlayerSchema
 from .policy import BotPolicy, PolicyKind, SspAgentPolicy
+from .trainer import TrainerSchema
 
 
 class TeamSide(str, Enum):
@@ -32,6 +33,7 @@ class TeamSchema(SchemaModel):
     side: TeamSide
     players: list[PlayerSchema]
     coach: Optional[CoachSchema] = None
+    trainer: Optional[TrainerSchema] = None
 
     @field_validator("name")
     @classmethod

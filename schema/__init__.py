@@ -2,6 +2,7 @@
 
 from .team import TeamsSchema, TeamSchema, TeamSide
 from .player import PlayerSchema, PlayerInitState, PlayerActionList
+from .trainer import TrainerSchema
 from .policy import (
     DEFAULT_BOT_IMAGE,
     DEFAULT_SSP_AGENT_IMAGE,
@@ -42,4 +43,3 @@ class GameServerSchema(SchemaModel):
     init_state: RoomInitState = Field(default_factory=RoomInitState)
     env: dict[str, str] | None = None
     log: bool = False
-
