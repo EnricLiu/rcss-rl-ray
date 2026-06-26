@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Callable
+from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from client.base.allocator import AllocatorConfig
 from schema import DEFAULT_SSP_AGENT_IMAGE, TeamSide
@@ -75,6 +75,23 @@ class TrainerDatasetConfig(BaseModel):
     image: str = DEFAULT_SSP_AGENT_IMAGE
 
 
+class RayDatasetExecutionConfig(BaseModel):
+    enabled: bool = False
+    max_concurrent_matches: int = Field(default=1, ge=1)
+    num_cpus_per_match: float = Field(default=1.0, gt=0)
+    num_gpus_per_match: float = Field(default=0.0, ge=0)
+    task_max_retries: int = Field(default=0, ge=0)
+    scheduling_strategy: str = "default"
+    summary_filename: str = "batch_summary.json"
+
+    @field_validator("summary_filename")
+    @classmethod
+    def _validate_summary_filename(cls, value: str) -> str:
+        if not value or Path(value).name != value:
+            raise ValueError("summary_filename must be a file name without directories")
+        return value
+
+
 class GenDatasetCurriculumConfig(BaseModel):
     type: Literal["gen_dataset"] = "gen_dataset"
     debug: bool = False
@@ -90,6 +107,7 @@ class GenDatasetCurriculumConfig(BaseModel):
     allocator: AllocatorConfig = Field(default_factory=lambda: AllocatorConfig(base_url="http://127.0.0.1:5555"))
     grpc_server: ServerConfig = Field(default_factory=ServerConfig)
     trainer: TrainerDatasetConfig = Field(default_factory=TrainerDatasetConfig)
+    ray: RayDatasetExecutionConfig = Field(default_factory=RayDatasetExecutionConfig)
 
     time_up: int = Field(default=5000, ge=0, le=65535)
     matches: int = Field(default=1, ge=1)
@@ -107,3 +125,9 @@ class GenDatasetCurriculumConfig(BaseModel):
                 for item in value
             ]
         return value
+
+    @model_validator(mode="after")
+    def _validate_ray_capacity(self) -> GenDatasetCurriculumConfig:
+        if self.ray.max_concurrent_matches > self.matches:
+            raise ValueError("ray.max_concurrent_matches must not exceed matches")
+        return self

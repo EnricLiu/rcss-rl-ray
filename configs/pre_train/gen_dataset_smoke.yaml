@@ -1,0 +1,35 @@
+type: gen_dataset
+output_root: /tmp/rcss-pretrain-smoke
+dataset_name: rcss-pretrain-smoke
+save_mode: obs
+
+image_pool:
+  - HELIOS/helios-base
+  - Cyrus2D/cyrus2024
+
+allocator:
+  base_url: http://127.0.0.1:5555
+
+grpc_server:
+  host: 0.0.0.0
+  port: 0
+  timeout: 5
+
+trainer:
+  sides:
+    - left
+  image: CLSFramework/soccer-simulation-proxy
+
+time_up: 1
+matches: 2
+random_seed: 20260626
+log: true
+
+ray:
+  enabled: true
+  max_concurrent_matches: 2
+  num_cpus_per_match: 1
+  num_gpus_per_match: 0
+  task_max_retries: 0
+  scheduling_strategy: default
+  summary_filename: batch_summary.json

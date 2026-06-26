@@ -15,9 +15,11 @@ dependencies = [
     "grpcio>=1.78.0",
     "httpx>=0.28.1",
     "pydantic>=2.12.5",
+    "pyyaml>=6.0.0",
 ]
 
 [tool.uv]
+environments = ["sys_platform == 'linux'"]
 offline = true
 
 [tool.uv.sources]
