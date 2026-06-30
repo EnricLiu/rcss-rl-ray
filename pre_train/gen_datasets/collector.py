@@ -64,7 +64,7 @@ class PretrainDatasetCollector:
         run_dir = self.config.output_root / self.config.dataset_name / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
         started_at = time.monotonic()
-        logger.info(
+        logger.warning(
             "Starting pretrain dataset run run_id=%s output=%s save_mode=%s time_up=%d "
             "left_image=%s right_image=%s left_team=%s right_team=%s",
             run_id,
@@ -87,7 +87,7 @@ class PretrainDatasetCollector:
                 block=False,
             )
             grpc_host = self._advertised_host()
-            logger.info(
+            logger.warning(
                 "Started dataset gRPC server run_id=%s advertised_host=%s port=%d",
                 run_id,
                 grpc_host,
@@ -103,10 +103,10 @@ class PretrainDatasetCollector:
                 grpc_port=actual_port,
             )
             write_json(run_dir / "schema.json", schema.model_dump(mode="json", by_alias=True, exclude_none=True))
-            logger.info("Wrote dataset schema run_id=%s path=%s", run_id, run_dir / "schema.json")
+            logger.warning("Wrote dataset schema run_id=%s path=%s", run_id, run_dir / "schema.json")
 
             room = self.allocator.request_room(schema)
-            logger.info(
+            logger.warning(
                 "Allocated dataset room run_id=%s room=%s rcss=%s mc=%s",
                 run_id,
                 room.info.name,
@@ -114,14 +114,14 @@ class PretrainDatasetCollector:
                 room.info.base_url_mc,
             )
             metrics_config = room.rcss.metrics_config()
-            logger.info(
+            logger.warning(
                 "Fetched RCSS metrics config run_id=%s log_root=%s game_log_rel_dir=%s",
                 run_id,
                 getattr(metrics_config, "log_root", None),
                 getattr(metrics_config, "rcss_game_log_rel_dir", None),
             )
             room.rcss.trainer.start()
-            logger.info("Started SSP trainer run_id=%s room=%s", run_id, room.info.name)
+            logger.warning("Started SSP trainer run_id=%s room=%s", run_id, room.info.name)
 
             agent_index = self._agent_index(
                 left,
@@ -130,7 +130,7 @@ class PretrainDatasetCollector:
                 right_team_name=right_team_name,
             )
             write_agent_index(run_dir / "agent_index.json", agent_index)
-            logger.info("Wrote agent index run_id=%s agents=%d", run_id, len(agent_index))
+            logger.warning("Wrote agent index run_id=%s agents=%d", run_id, len(agent_index))
 
             cycles: list[int] = []
             missing_cycles: list[int] = []
@@ -178,12 +178,12 @@ class PretrainDatasetCollector:
 
             if should_save_obs:
                 write_obs(run_dir / "obs.npy", obs_rows)
-                logger.info("Wrote obs array run_id=%s path=%s rows=%d", run_id, run_dir / "obs.npy", len(obs_rows))
+                logger.warning("Wrote obs array run_id=%s path=%s rows=%d", run_id, run_dir / "obs.npy", len(obs_rows))
             write_cycles(run_dir / "cycles.npy", cycles)
-            logger.info("Wrote cycles array run_id=%s path=%s count=%d", run_id, run_dir / "cycles.npy", len(cycles))
+            logger.warning("Wrote cycles array run_id=%s path=%s count=%d", run_id, run_dir / "cycles.npy", len(cycles))
             if state_offsets:
                 write_json(run_dir / "state_index.json", state_offsets)
-                logger.info("Wrote state index run_id=%s path=%s entries=%d", run_id, run_dir / "state_index.json", len(state_offsets))
+                logger.warning("Wrote state index run_id=%s path=%s entries=%d", run_id, run_dir / "state_index.json", len(state_offsets))
 
             manifest = self._manifest(
                 run_id=run_id,
@@ -199,7 +199,7 @@ class PretrainDatasetCollector:
             )
             manifest_path = run_dir / "manifest.json"
             write_json(manifest_path, manifest)
-            logger.info(
+            logger.warning(
                 "Finished pretrain dataset run run_id=%s manifest=%s collected_cycles=%d "
                 "missing_cycles=%d elapsed_s=%.1f",
                 run_id,
@@ -216,10 +216,10 @@ class PretrainDatasetCollector:
             )
         finally:
             if room is not None:
-                logger.info("Releasing dataset room run_id=%s room=%s", run_id, room.info.name)
+                logger.warning("Releasing dataset room run_id=%s room=%s", run_id, room.info.name)
                 room.release()
             if server is not None and loop is not None:
-                logger.info("Stopping dataset gRPC server run_id=%s", run_id)
+                logger.warning("Stopping dataset gRPC server run_id=%s", run_id)
                 self._stop_grpc_server(server, loop)
 
     def _should_log_cycle_progress(self, cycle: int) -> bool:
@@ -242,7 +242,7 @@ class PretrainDatasetCollector:
     ) -> None:
         elapsed_s = max(time.monotonic() - started_at, 0.001)
         progress_pct = (cycle / self.config.time_up * 100.0) if self.config.time_up else 100.0
-        logger.info(
+        logger.warning(
             "Dataset run progress run_id=%s cycle=%d/%d progress=%.1f%% collected=%d "
             "missing=%d cycles_per_s=%.2f",
             run_id,

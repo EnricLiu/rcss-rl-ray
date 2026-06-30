@@ -58,7 +58,7 @@ def collect_match_once(
     _ensure_worker_logging()
     started_at = datetime.now(timezone.utc).isoformat()
     run_id = run_id_for_match(batch_id, match_index)
-    logger.info(
+    logger.warning(
         "Starting dataset match task batch_id=%s match_index=%d run_id=%s seed=%d",
         batch_id,
         match_index,
@@ -72,7 +72,7 @@ def collect_match_once(
             rng=random.Random(seed),
         ).collect_once(run_id=run_id)
         finished_at = datetime.now(timezone.utc).isoformat()
-        logger.info(
+        logger.warning(
             "Finished dataset match task batch_id=%s match_index=%d run_id=%s cycles=%d missing=%d",
             batch_id,
             match_index,
@@ -143,7 +143,7 @@ def collect_match_smoke(
         },
     )
     finished_at = datetime.now(timezone.utc).isoformat()
-    logger.info(
+    logger.warning(
         "Finished synthetic dataset smoke task batch_id=%s match_index=%d run_id=%s",
         batch_id,
         match_index,
@@ -224,7 +224,7 @@ def run_distributed_collection(
     pending: list[tuple[int, int, Any]] = []
     results: list[dict[str, Any]] = []
     next_match_index = 1
-    logger.info(
+    logger.warning(
         "Starting distributed dataset batch batch_id=%s matches=%d max_concurrent=%d "
         "num_cpus_per_match=%s num_gpus_per_match=%s",
         batch_id,
@@ -244,7 +244,7 @@ def run_distributed_collection(
             batch_id=batch_id,
         )
         pending.append((next_match_index, seed, ref))
-        logger.info(
+        logger.warning(
             "Submitted dataset match task batch_id=%s match_index=%d seed=%d pending=%d completed=%d/%d",
             batch_id,
             next_match_index,
@@ -307,7 +307,7 @@ def run_distributed_collection(
 
     summary_path = write_batch_summary(config=config, batch_id=batch_id, results=results)
     failures = [item for item in results if item.get("status") != "succeeded"]
-    logger.info(
+    logger.warning(
         "Finished distributed dataset batch batch_id=%s summary=%s succeeded=%d failed=%d elapsed_s=%.1f",
         batch_id,
         summary_path,
@@ -336,7 +336,7 @@ def _log_batch_progress(
     ):
         failures = sum(1 for item in results if item.get("status") != "succeeded")
         elapsed_s = max(time.monotonic() - started_at, 0.001)
-        logger.info(
+        logger.warning(
             "Dataset batch progress batch_id=%s completed=%d/%d failed=%d pending=%d "
             "matches_per_s=%.2f",
             batch_id,
@@ -383,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import ray
 
-    logger.info("Connecting to Ray address=%s batch_id=%s smoke_test=%s", args.ray_address, batch_id, args.smoke_test)
+    logger.warning("Connecting to Ray address=%s batch_id=%s smoke_test=%s", args.ray_address, batch_id, args.smoke_test)
     ray.init(address=args.ray_address)
     try:
         collect_fn = collect_match_smoke if args.smoke_test else collect_match_once
