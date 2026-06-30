@@ -418,6 +418,7 @@ class GameServicer(pb2_grpc.GameServicer):
             "game_mode_type": wm.game_mode_type,
         }
         logger.debug("GetTrainerActions stored trainer world model (cycle=%d)", wm.cycle)
+        logger.warning(f"wm: {wm.SerializeToString()}")
         return pb2.TrainerActions()
 
     async def SendInitMessage(
