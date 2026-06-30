@@ -3,7 +3,7 @@ from typing import Any
 from ...config import ClientConfig
 
 class TrainerConfig(ClientConfig):
-    prefix: str = "/command/trainer"
+    prefix: str = "/trainer"
 
     @property
     def path_change_mode(self) -> str:
@@ -125,7 +125,7 @@ class RcssConfig(ClientConfig):
     __metrics: MetricsConfig = None
 
     def model_post_init(self, context: Any, /) -> None:
-        self.__trainer = TrainerConfig(base_url=self.base_url, prefix="/command/trainer")
+        self.__trainer = TrainerConfig(base_url=self.base_url, prefix="/trainer")
         self.__control = ControllerConfig(base_url=self.base_url, prefix="/control")
         self.__metrics = MetricsConfig(base_url=self.base_url, prefix="/metrics")
 
