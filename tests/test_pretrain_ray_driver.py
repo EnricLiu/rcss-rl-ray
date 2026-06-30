@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -52,6 +53,7 @@ def test_config_payload_round_trips_without_callable_mappings(tmp_path: Path) ->
 def test_collect_match_once_returns_success_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FakeCollector:
         def __init__(self, config: GenDatasetCurriculumConfig, **kwargs: object) -> None:
@@ -72,18 +74,21 @@ def test_collect_match_once_returns_success_payload(
 
     monkeypatch.setattr("pre_train.gen_datasets.ray_driver.PretrainDatasetCollector", FakeCollector)
 
-    result = collect_match_once(
-        config_payload(_config(tmp_path)),
-        match_index=1,
-        seed=101,
-        batch_id="batch-a",
-    )
+    with caplog.at_level(logging.INFO, logger="pre_train.gen_datasets.ray_driver"):
+        result = collect_match_once(
+            config_payload(_config(tmp_path)),
+            match_index=1,
+            seed=101,
+            batch_id="batch-a",
+        )
 
     assert result["status"] == "succeeded"
     assert result["run_id"] == "batch-a-match-000001"
     assert result["cycles"] == 3
     assert result["missing_cycles"] == [4]
     assert result["manifest_path"].endswith("/manifest.json")
+    assert "Starting dataset match task batch_id=batch-a match_index=1" in caplog.text
+    assert "Finished dataset match task batch_id=batch-a match_index=1" in caplog.text
 
 
 def test_collect_match_once_returns_failure_payload(
@@ -112,19 +117,24 @@ def test_collect_match_once_returns_failure_payload(
     assert "boom batch-a-match-000002" in result["error_message"]
 
 
-def test_collect_match_smoke_writes_synthetic_manifest(tmp_path: Path) -> None:
-    result = collect_match_smoke(
-        config_payload(_config(tmp_path)),
-        match_index=1,
-        seed=101,
-        batch_id="batch-a",
-    )
+def test_collect_match_smoke_writes_synthetic_manifest(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="pre_train.gen_datasets.ray_driver"):
+        result = collect_match_smoke(
+            config_payload(_config(tmp_path)),
+            match_index=1,
+            seed=101,
+            batch_id="batch-a",
+        )
 
     assert result["status"] == "succeeded"
     assert result["smoke_test"] is True
     manifest = json.loads(Path(str(result["manifest_path"])).read_text(encoding="utf-8"))
     assert manifest["kind"] == "rcss_pretrain_dataset_smoke_run"
     assert manifest["run_id"] == "batch-a-match-000001"
+    assert "Finished synthetic dataset smoke task batch_id=batch-a match_index=1" in caplog.text
 
 
 def test_write_batch_summary_records_successes_and_failures(tmp_path: Path) -> None:
@@ -145,7 +155,10 @@ def test_write_batch_summary_records_successes_and_failures(tmp_path: Path) -> N
     assert json.loads(path.read_text(encoding="utf-8"))["matches_failed"] == 1
 
 
-def test_run_distributed_collection_smoke_with_local_ray(tmp_path: Path) -> None:
+def test_run_distributed_collection_smoke_with_local_ray(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     ray = pytest.importorskip("ray")
     config = _config(tmp_path)
 
@@ -154,11 +167,12 @@ def test_run_distributed_collection_smoke_with_local_ray(tmp_path: Path) -> None
     except PermissionError as exc:
         pytest.skip(f"Ray local mode cannot create sockets in this sandbox: {exc}")
     try:
-        results, summary_path = run_distributed_collection(
-            config,
-            batch_id="batch-local",
-            collect_fn=collect_match_smoke,
-        )
+        with caplog.at_level(logging.INFO, logger="pre_train.gen_datasets.ray_driver"):
+            results, summary_path = run_distributed_collection(
+                config,
+                batch_id="batch-local",
+                collect_fn=collect_match_smoke,
+            )
     finally:
         ray.shutdown()
 
@@ -167,3 +181,6 @@ def test_run_distributed_collection_smoke_with_local_ray(tmp_path: Path) -> None
     assert summary["matches_requested"] == 2
     assert summary["matches_succeeded"] == 2
     assert summary["matches_failed"] == 0
+    assert "Starting distributed dataset batch batch_id=batch-local" in caplog.text
+    assert "Dataset batch progress batch_id=batch-local completed=2/2" in caplog.text
+    assert "Finished distributed dataset batch batch_id=batch-local" in caplog.text

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import random
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,7 +12,18 @@ from uuid import uuid4
 from .collector import PretrainDatasetCollector
 from .config import GenDatasetCurriculumConfig
 from .loader import load_gen_dataset_config
+from .progress import manual_progress
 from .storage import write_json
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_worker_logging() -> None:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
 
 
 def make_batch_id() -> str:
@@ -42,8 +55,16 @@ def collect_match_once(
     seed: int,
     batch_id: str,
 ) -> dict[str, Any]:
+    _ensure_worker_logging()
     started_at = datetime.now(timezone.utc).isoformat()
     run_id = run_id_for_match(batch_id, match_index)
+    logger.info(
+        "Starting dataset match task batch_id=%s match_index=%d run_id=%s seed=%d",
+        batch_id,
+        match_index,
+        run_id,
+        seed,
+    )
     try:
         config = GenDatasetCurriculumConfig.model_validate(config_payload)
         result = PretrainDatasetCollector(
@@ -51,6 +72,14 @@ def collect_match_once(
             rng=random.Random(seed),
         ).collect_once(run_id=run_id)
         finished_at = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            "Finished dataset match task batch_id=%s match_index=%d run_id=%s cycles=%d missing=%d",
+            batch_id,
+            match_index,
+            run_id,
+            len(result.cycles),
+            len(result.missing_cycles),
+        )
         return {
             "match_index": match_index,
             "run_id": run_id,
@@ -67,6 +96,12 @@ def collect_match_once(
         }
     except Exception as exc:
         finished_at = datetime.now(timezone.utc).isoformat()
+        logger.exception(
+            "Dataset match task failed batch_id=%s match_index=%d run_id=%s",
+            batch_id,
+            match_index,
+            run_id,
+        )
         return {
             "match_index": match_index,
             "run_id": run_id,
@@ -90,6 +125,7 @@ def collect_match_smoke(
     seed: int,
     batch_id: str,
 ) -> dict[str, Any]:
+    _ensure_worker_logging()
     started_at = datetime.now(timezone.utc).isoformat()
     config = GenDatasetCurriculumConfig.model_validate(config_payload)
     run_id = run_id_for_match(batch_id, match_index)
@@ -107,6 +143,12 @@ def collect_match_smoke(
         },
     )
     finished_at = datetime.now(timezone.utc).isoformat()
+    logger.info(
+        "Finished synthetic dataset smoke task batch_id=%s match_index=%d run_id=%s",
+        batch_id,
+        match_index,
+        run_id,
+    )
     return {
         "match_index": match_index,
         "run_id": run_id,
@@ -176,11 +218,21 @@ def run_distributed_collection(
 ) -> tuple[list[dict[str, Any]], Path]:
     import ray
 
+    started_at = time.monotonic()
     payload = config_payload(config)
     remote_collect = ray.remote(**_ray_task_options(config))(collect_fn)
     pending: list[tuple[int, int, Any]] = []
     results: list[dict[str, Any]] = []
     next_match_index = 1
+    logger.info(
+        "Starting distributed dataset batch batch_id=%s matches=%d max_concurrent=%d "
+        "num_cpus_per_match=%s num_gpus_per_match=%s",
+        batch_id,
+        config.matches,
+        config.ray.max_concurrent_matches,
+        config.ray.num_cpus_per_match,
+        config.ray.num_gpus_per_match,
+    )
 
     def submit_next() -> None:
         nonlocal next_match_index
@@ -192,21 +244,40 @@ def run_distributed_collection(
             batch_id=batch_id,
         )
         pending.append((next_match_index, seed, ref))
+        logger.info(
+            "Submitted dataset match task batch_id=%s match_index=%d seed=%d pending=%d completed=%d/%d",
+            batch_id,
+            next_match_index,
+            seed,
+            len(pending),
+            len(results),
+            config.matches,
+        )
         next_match_index += 1
 
     while next_match_index <= config.matches and len(pending) < config.ray.max_concurrent_matches:
         submit_next()
 
-    while pending:
-        ready_refs, _ = ray.wait([ref for _, _, ref in pending], num_returns=1)
-        ready_ref = ready_refs[0]
-        match_index, seed, _ = next(item for item in pending if item[2] == ready_ref)
-        pending = [item for item in pending if item[2] != ready_ref]
-        try:
-            results.append(ray.get(ready_ref))
-        except Exception as exc:
-            results.append(
-                {
+    with manual_progress(
+        progress=config.progress,
+        total=config.matches,
+        desc=f"batch {batch_id}",
+        unit="match",
+    ) as progress_bar:
+        while pending:
+            ready_refs, _ = ray.wait([ref for _, _, ref in pending], num_returns=1)
+            ready_ref = ready_refs[0]
+            match_index, seed, _ = next(item for item in pending if item[2] == ready_ref)
+            pending = [item for item in pending if item[2] != ready_ref]
+            try:
+                result = ray.get(ready_ref)
+            except Exception as exc:
+                logger.exception(
+                    "Dataset match task crashed before returning structured result batch_id=%s match_index=%d",
+                    batch_id,
+                    match_index,
+                )
+                result = {
                     "match_index": match_index,
                     "run_id": run_id_for_match(batch_id, match_index),
                     "seed": seed,
@@ -220,13 +291,61 @@ def run_distributed_collection(
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
                 }
+            results.append(result)
+            if progress_bar is not None:
+                progress_bar.update(1)
+            _log_batch_progress(
+                batch_id=batch_id,
+                config=config,
+                results=results,
+                pending_count=len(pending),
+                started_at=started_at,
             )
 
-        if next_match_index <= config.matches:
-            submit_next()
+            if next_match_index <= config.matches:
+                submit_next()
 
     summary_path = write_batch_summary(config=config, batch_id=batch_id, results=results)
+    failures = [item for item in results if item.get("status") != "succeeded"]
+    logger.info(
+        "Finished distributed dataset batch batch_id=%s summary=%s succeeded=%d failed=%d elapsed_s=%.1f",
+        batch_id,
+        summary_path,
+        len(results) - len(failures),
+        len(failures),
+        time.monotonic() - started_at,
+    )
     return results, summary_path
+
+
+def _log_batch_progress(
+    *,
+    batch_id: str,
+    config: GenDatasetCurriculumConfig,
+    results: list[dict[str, Any]],
+    pending_count: int,
+    started_at: float,
+) -> None:
+    completed = len(results)
+    if not config.progress.enabled:
+        return
+    if (
+        completed == 1
+        or completed == config.matches
+        or completed % config.progress.match_log_interval == 0
+    ):
+        failures = sum(1 for item in results if item.get("status") != "succeeded")
+        elapsed_s = max(time.monotonic() - started_at, 0.001)
+        logger.info(
+            "Dataset batch progress batch_id=%s completed=%d/%d failed=%d pending=%d "
+            "matches_per_s=%.2f",
+            batch_id,
+            completed,
+            config.matches,
+            failures,
+            pending_count,
+            completed / elapsed_s,
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -240,6 +359,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-id", type=str, default=None, help="Optional deterministic batch id.")
     parser.add_argument("--ray-address", type=str, default="auto", help="Ray address passed to ray.init().")
     parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+    )
+    parser.add_argument(
         "--smoke-test",
         action="store_true",
         help="Run synthetic Ray tasks without allocating RCSS rooms.",
@@ -249,11 +374,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     config = load_gen_dataset_config(args.config)
     batch_id = args.batch_id or make_batch_id()
 
     import ray
 
+    logger.info("Connecting to Ray address=%s batch_id=%s smoke_test=%s", args.ray_address, batch_id, args.smoke_test)
     ray.init(address=args.ray_address)
     try:
         collect_fn = collect_match_smoke if args.smoke_test else collect_match_once

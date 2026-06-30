@@ -25,6 +25,13 @@ matches: 1
 random_seed: 20260626
 log: true
 
+progress:
+  enabled: true
+  cycle_log_interval: 500
+  match_log_interval: 1
+  tqdm: auto
+  tqdm_leave: false
+
 ray:
   enabled: true
   max_concurrent_matches: 1

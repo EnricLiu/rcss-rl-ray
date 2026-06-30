@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import sys
 from ipaddress import IPv4Address
@@ -121,6 +122,7 @@ def test_load_gen_dataset_config_supports_yaml_json_and_toml(tmp_path: Path) -> 
         "image_pool": ["HELIOS/helios-base", "Cyrus2D/cyrus2024"],
         "time_up": 12,
         "matches": 2,
+        "progress": {"cycle_log_interval": 3, "match_log_interval": 2, "tqdm": "never"},
         "ray": {"max_concurrent_matches": 2},
     }
 
@@ -135,6 +137,10 @@ def test_load_gen_dataset_config_supports_yaml_json_and_toml(tmp_path: Path) -> 
                 "  - Cyrus2D/cyrus2024",
                 "time_up: 12",
                 "matches: 2",
+                "progress:",
+                "  cycle_log_interval: 3",
+                "  match_log_interval: 2",
+                "  tqdm: never",
                 "ray:",
                 "  max_concurrent_matches: 2",
                 "",
@@ -153,6 +159,10 @@ def test_load_gen_dataset_config_supports_yaml_json_and_toml(tmp_path: Path) -> 
                 'image_pool = ["HELIOS/helios-base", "Cyrus2D/cyrus2024"]',
                 "time_up = 12",
                 "matches = 2",
+                "[progress]",
+                "cycle_log_interval = 3",
+                "match_log_interval = 2",
+                'tqdm = "never"',
                 "[ray]",
                 "max_concurrent_matches = 2",
                 "",
@@ -163,6 +173,7 @@ def test_load_gen_dataset_config_supports_yaml_json_and_toml(tmp_path: Path) -> 
 
     assert load_config_mapping(yaml_path)["dataset_name"] == "loader-test"
     assert load_gen_dataset_config(yaml_path).ray.max_concurrent_matches == 2
+    assert load_gen_dataset_config(yaml_path).progress.cycle_log_interval == 3
     assert load_gen_dataset_config(json_path).image_pool[1].image == "Cyrus2D/cyrus2024"
     assert load_gen_dataset_config(toml_path).time_up == 12
 
@@ -281,6 +292,7 @@ def test_world_model_stream_round_trip(tmp_path: Path) -> None:
 def test_collector_writes_manifest_with_log_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FakeMetricsConfig:
         def model_dump(self, **_: object) -> dict[str, object]:
@@ -345,15 +357,17 @@ def test_collector_writes_manifest_with_log_root(
         ],
         random_seed=0,
         time_up=2,
+        progress={"cycle_log_interval": 1, "tqdm": "never"},
     )
     allocator = FakeAllocator()
     servicer = FakeServicer()
 
-    result = PretrainDatasetCollector(
-        config,
-        allocator=allocator,
-        servicer=servicer,
-    ).collect_once(run_id="run-a")
+    with caplog.at_level(logging.INFO, logger="pre_train.gen_datasets.collector"):
+        result = PretrainDatasetCollector(
+            config,
+            allocator=allocator,
+            servicer=servicer,
+        ).collect_once(run_id="run-a")
 
     manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
     schema_payload = json.loads((result.run_dir / "schema.json").read_text(encoding="utf-8"))
@@ -373,3 +387,7 @@ def test_collector_writes_manifest_with_log_root(
     assert servicer.discarded == [1, 2]
     assert [wm.cycle for wm in iter_world_models(result.run_dir / "states.pb")] == [1, 2]
     assert allocator.requested_schema.teams.left.trainer.policy.grpc_port == 43123
+    assert "Starting pretrain dataset run run_id=run-a" in caplog.text
+    assert "Dataset run progress run_id=run-a cycle=1/2" in caplog.text
+    assert "Dataset run progress run_id=run-a cycle=2/2" in caplog.text
+    assert "Finished pretrain dataset run run_id=run-a" in caplog.text

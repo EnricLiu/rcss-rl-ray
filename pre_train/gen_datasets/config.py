@@ -22,6 +22,12 @@ class SaveMode(str, Enum):
     BOTH = "both"
 
 
+class TqdmMode(str, Enum):
+    AUTO = "auto"
+    ALWAYS = "always"
+    NEVER = "never"
+
+
 class Image(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -92,6 +98,14 @@ class RayDatasetExecutionConfig(BaseModel):
         return value
 
 
+class DatasetProgressConfig(BaseModel):
+    enabled: bool = True
+    cycle_log_interval: int = Field(default=500, ge=1)
+    match_log_interval: int = Field(default=1, ge=1)
+    tqdm: TqdmMode = TqdmMode.AUTO
+    tqdm_leave: bool = False
+
+
 class GenDatasetCurriculumConfig(BaseModel):
     type: Literal["gen_dataset"] = "gen_dataset"
     debug: bool = False
@@ -108,6 +122,7 @@ class GenDatasetCurriculumConfig(BaseModel):
     grpc_server: ServerConfig = Field(default_factory=ServerConfig)
     trainer: TrainerDatasetConfig = Field(default_factory=TrainerDatasetConfig)
     ray: RayDatasetExecutionConfig = Field(default_factory=RayDatasetExecutionConfig)
+    progress: DatasetProgressConfig = Field(default_factory=DatasetProgressConfig)
 
     time_up: int = Field(default=5000, ge=0, le=65535)
     matches: int = Field(default=1, ge=1)

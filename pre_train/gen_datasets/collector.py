@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from ipaddress import ip_address
@@ -19,6 +20,7 @@ from rcss_env.grpc_srv.servicer import GameServicer, serve
 from schema import TeamSide
 
 from .config import GenDatasetCurriculumConfig, Image, SaveMode
+from .progress import iter_progress
 from .projector import AgentIndexEntry, extract_agent_obs, team_agent_index
 from .schema_builder import build_pretrain_schema
 from .storage import append_world_model, write_agent_index, write_cycles, write_json, write_obs
@@ -61,6 +63,19 @@ class PretrainDatasetCollector:
         run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
         run_dir = self.config.output_root / self.config.dataset_name / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
+        started_at = time.monotonic()
+        logger.info(
+            "Starting pretrain dataset run run_id=%s output=%s save_mode=%s time_up=%d "
+            "left_image=%s right_image=%s left_team=%s right_team=%s",
+            run_id,
+            run_dir,
+            self.config.save_mode.value,
+            self.config.time_up,
+            left.image,
+            right.image,
+            left_team_name,
+            right_team_name,
+        )
 
         server = None
         loop = None
@@ -72,6 +87,12 @@ class PretrainDatasetCollector:
                 block=False,
             )
             grpc_host = self._advertised_host()
+            logger.info(
+                "Started dataset gRPC server run_id=%s advertised_host=%s port=%d",
+                run_id,
+                grpc_host,
+                actual_port,
+            )
             schema = build_pretrain_schema(
                 self.config,
                 left_image=left,
@@ -82,10 +103,25 @@ class PretrainDatasetCollector:
                 grpc_port=actual_port,
             )
             write_json(run_dir / "schema.json", schema.model_dump(mode="json", by_alias=True, exclude_none=True))
+            logger.info("Wrote dataset schema run_id=%s path=%s", run_id, run_dir / "schema.json")
 
             room = self.allocator.request_room(schema)
+            logger.info(
+                "Allocated dataset room run_id=%s room=%s rcss=%s mc=%s",
+                run_id,
+                room.info.name,
+                room.info.base_url_rcss,
+                room.info.base_url_mc,
+            )
             metrics_config = room.rcss.metrics_config()
+            logger.info(
+                "Fetched RCSS metrics config run_id=%s log_root=%s game_log_rel_dir=%s",
+                run_id,
+                getattr(metrics_config, "log_root", None),
+                getattr(metrics_config, "rcss_game_log_rel_dir", None),
+            )
             room.rcss.trainer.start()
+            logger.info("Started SSP trainer run_id=%s room=%s", run_id, room.info.name)
 
             agent_index = self._agent_index(
                 left,
@@ -94,6 +130,7 @@ class PretrainDatasetCollector:
                 right_team_name=right_team_name,
             )
             write_agent_index(run_dir / "agent_index.json", agent_index)
+            logger.info("Wrote agent index run_id=%s agents=%d", run_id, len(agent_index))
 
             cycles: list[int] = []
             missing_cycles: list[int] = []
@@ -104,7 +141,14 @@ class PretrainDatasetCollector:
             should_save_state = self.config.save_mode in {SaveMode.STATE, SaveMode.BOTH}
             should_save_obs = self.config.save_mode in {SaveMode.OBS, SaveMode.BOTH}
 
-            for cycle in range(1, self.config.time_up + 1):
+            cycle_iter = iter_progress(
+                range(1, self.config.time_up + 1),
+                progress=self.config.progress,
+                total=self.config.time_up,
+                desc=f"dataset {run_id}",
+                unit="cycle",
+            )
+            for cycle in cycle_iter:
                 try:
                     wm = self.servicer.fetch_trainer_world_model(
                         cycle,
@@ -123,12 +167,23 @@ class PretrainDatasetCollector:
                     obs_rows.append(self._obs_for_cycle(wm, agent_index))
 
                 self.servicer.discard_trainer_before(cycle)
+                if self._should_log_cycle_progress(cycle):
+                    self._log_cycle_progress(
+                        run_id=run_id,
+                        cycle=cycle,
+                        cycles=cycles,
+                        missing_cycles=missing_cycles,
+                        started_at=started_at,
+                    )
 
             if should_save_obs:
                 write_obs(run_dir / "obs.npy", obs_rows)
+                logger.info("Wrote obs array run_id=%s path=%s rows=%d", run_id, run_dir / "obs.npy", len(obs_rows))
             write_cycles(run_dir / "cycles.npy", cycles)
+            logger.info("Wrote cycles array run_id=%s path=%s count=%d", run_id, run_dir / "cycles.npy", len(cycles))
             if state_offsets:
                 write_json(run_dir / "state_index.json", state_offsets)
+                logger.info("Wrote state index run_id=%s path=%s entries=%d", run_id, run_dir / "state_index.json", len(state_offsets))
 
             manifest = self._manifest(
                 run_id=run_id,
@@ -144,6 +199,15 @@ class PretrainDatasetCollector:
             )
             manifest_path = run_dir / "manifest.json"
             write_json(manifest_path, manifest)
+            logger.info(
+                "Finished pretrain dataset run run_id=%s manifest=%s collected_cycles=%d "
+                "missing_cycles=%d elapsed_s=%.1f",
+                run_id,
+                manifest_path,
+                len(cycles),
+                len(missing_cycles),
+                time.monotonic() - started_at,
+            )
             return DatasetRunResult(
                 run_dir=run_dir,
                 manifest_path=manifest_path,
@@ -152,9 +216,43 @@ class PretrainDatasetCollector:
             )
         finally:
             if room is not None:
+                logger.info("Releasing dataset room run_id=%s room=%s", run_id, room.info.name)
                 room.release()
             if server is not None and loop is not None:
+                logger.info("Stopping dataset gRPC server run_id=%s", run_id)
                 self._stop_grpc_server(server, loop)
+
+    def _should_log_cycle_progress(self, cycle: int) -> bool:
+        if not self.config.progress.enabled:
+            return False
+        return (
+            cycle == 1
+            or cycle == self.config.time_up
+            or cycle % self.config.progress.cycle_log_interval == 0
+        )
+
+    def _log_cycle_progress(
+        self,
+        *,
+        run_id: str,
+        cycle: int,
+        cycles: list[int],
+        missing_cycles: list[int],
+        started_at: float,
+    ) -> None:
+        elapsed_s = max(time.monotonic() - started_at, 0.001)
+        progress_pct = (cycle / self.config.time_up * 100.0) if self.config.time_up else 100.0
+        logger.info(
+            "Dataset run progress run_id=%s cycle=%d/%d progress=%.1f%% collected=%d "
+            "missing=%d cycles_per_s=%.2f",
+            run_id,
+            cycle,
+            self.config.time_up,
+            progress_pct,
+            len(cycles),
+            len(missing_cycles),
+            cycle / elapsed_s,
+        )
 
     def _advertised_host(self) -> IPvAnyAddress:
         host = self.config.grpc_server.host
