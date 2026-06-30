@@ -215,6 +215,32 @@ def test_rcss_metrics_config_parses_log_root() -> None:
     assert config.half_time_auto_start is True
 
 
+def test_rcss_metrics_config_accepts_numeric_half_time_auto_start() -> None:
+    def handler(request: Request) -> Response:
+        assert request.method == "GET"
+        assert request.url.path == "/metrics/config"
+        return Response(
+            200,
+            json=envelope(
+                {
+                    "log_root": "/var/log/rcss",
+                    "rcss_game_log_rel_dir": "games",
+                    "half_time_auto_start": 3000,
+                }
+            ),
+        )
+
+    rcss = RcssClient(
+        "http://rcss.test",
+        client=Client(base_url="http://rcss.test", transport=MockTransport(handler)),
+    )
+
+    config = rcss.metrics_config()
+
+    assert config.log_root == "/var/log/rcss"
+    assert config.half_time_auto_start == 3000
+
+
 def test_servicer_stores_trainer_world_model_exact_cycle() -> None:
     async def exercise() -> None:
         servicer = GameServicer()

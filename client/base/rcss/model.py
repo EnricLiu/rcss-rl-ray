@@ -30,7 +30,7 @@ class MetricsConnectionInfo(OpenResultModel):
 
 class MetricsConfigResponse(OpenResultModel):
 	log_root: str
-	half_time_auto_start: bool | None = None
+	half_time_auto_start: bool | int | None = None
 	always_log_stdout: bool | None = None
 	rcss_game_log_rel_dir: str | None = None
 	rcss_stdio_log_rel_path: str | None = None
