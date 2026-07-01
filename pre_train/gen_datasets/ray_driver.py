@@ -73,12 +73,14 @@ def collect_match_once(
         ).collect_once(run_id=run_id)
         finished_at = datetime.now(timezone.utc).isoformat()
         logger.warning(
-            "Finished dataset match task batch_id=%s match_index=%d run_id=%s cycles=%d missing=%d",
+            "Finished dataset match task batch_id=%s match_index=%d run_id=%s cycles=%d "
+            "missing=%d invalid_projection=%d",
             batch_id,
             match_index,
             run_id,
             len(result.cycles),
             len(result.missing_cycles),
+            len(result.invalid_projection_cycles),
         )
         return {
             "match_index": match_index,
@@ -89,6 +91,7 @@ def collect_match_once(
             "manifest_path": result.manifest_path.as_posix(),
             "cycles": len(result.cycles),
             "missing_cycles": result.missing_cycles,
+            "invalid_projection_cycles": result.invalid_projection_cycles,
             "started_at": started_at,
             "finished_at": finished_at,
             "error_type": None,
@@ -111,6 +114,7 @@ def collect_match_once(
             "manifest_path": None,
             "cycles": 0,
             "missing_cycles": [],
+            "invalid_projection_cycles": [],
             "started_at": started_at,
             "finished_at": finished_at,
             "error_type": type(exc).__name__,
@@ -158,6 +162,7 @@ def collect_match_smoke(
         "manifest_path": manifest_path.as_posix(),
         "cycles": 0,
         "missing_cycles": [],
+        "invalid_projection_cycles": [],
         "started_at": started_at,
         "finished_at": finished_at,
         "error_type": None,
@@ -286,6 +291,7 @@ def run_distributed_collection(
                     "manifest_path": None,
                     "cycles": 0,
                     "missing_cycles": [],
+                    "invalid_projection_cycles": [],
                     "started_at": None,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                     "error_type": type(exc).__name__,

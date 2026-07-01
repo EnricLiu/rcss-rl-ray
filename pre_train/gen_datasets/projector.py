@@ -89,6 +89,7 @@ def project_global_world_model(
         raise ValueError(
             f"Cannot project trainer world model cycle={wm.cycle}: "
             f"side={side.value} unum={unum} is not present in own player map"
+            f"wm={wm!r}"
         )
 
     projected = pb2.WorldModel()
@@ -126,6 +127,18 @@ def project_global_world_model(
 
     _set_ball_relative_to_self(projected)
     return projected
+
+
+def missing_projectable_agents(
+    wm: pb2.WorldModel,
+    agent_index: list[AgentIndexEntry],
+) -> list[AgentIndexEntry]:
+    missing: list[AgentIndexEntry] = []
+    for entry in agent_index:
+        our_players, _ = _player_maps_for_side(wm, entry.side)
+        if entry.unum not in our_players:
+            missing.append(entry)
+    return missing
 
 
 def extract_agent_obs(wm: pb2.WorldModel, entry: AgentIndexEntry) -> np.ndarray:

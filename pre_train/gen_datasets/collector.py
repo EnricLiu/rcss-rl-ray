@@ -4,7 +4,7 @@ import asyncio
 import logging
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from ipaddress import ip_address
 from pathlib import Path
@@ -21,7 +21,7 @@ from schema import TeamSide
 
 from .config import GenDatasetCurriculumConfig, Image, SaveMode
 from .progress import iter_progress
-from .projector import AgentIndexEntry, extract_agent_obs, team_agent_index
+from .projector import AgentIndexEntry, extract_agent_obs, missing_projectable_agents, team_agent_index
 from .schema_builder import build_pretrain_schema
 from .storage import append_world_model, write_agent_index, write_cycles, write_json, write_obs
 
@@ -34,6 +34,7 @@ class DatasetRunResult:
     manifest_path: Path
     cycles: list[int]
     missing_cycles: list[int]
+    invalid_projection_cycles: list[dict[str, object]] = field(default_factory=list)
 
 
 class PretrainDatasetCollector:
@@ -134,6 +135,7 @@ class PretrainDatasetCollector:
 
             cycles: list[int] = []
             missing_cycles: list[int] = []
+            invalid_projection_cycles: list[dict[str, object]] = []
             obs_rows: list[np.ndarray] = []
             state_offsets: list[dict[str, int]] = []
 
@@ -159,12 +161,38 @@ class PretrainDatasetCollector:
                     missing_cycles.append(cycle)
                     continue
 
+                obs_row: np.ndarray | None = None
+                if should_save_obs:
+                    invalid_projection = self._invalid_projection_cycle(wm, agent_index)
+                    if invalid_projection is not None:
+                        invalid_projection_cycles.append(invalid_projection)
+                        logger.warning(
+                            "Skipping unprojectable trainer world model run_id=%s cycle=%d "
+                            "missing_agents=%d sample=%s",
+                            run_id,
+                            int(wm.cycle),
+                            len(invalid_projection["missing_agents"]),
+                            invalid_projection["missing_agents"][:4],
+                        )
+                        if self._should_log_cycle_progress(cycle):
+                            self._log_cycle_progress(
+                                run_id=run_id,
+                                cycle=cycle,
+                                cycles=cycles,
+                                missing_cycles=missing_cycles,
+                                invalid_projection_cycles=invalid_projection_cycles,
+                                started_at=started_at,
+                            )
+                        self.servicer.discard_trainer_before(cycle)
+                        continue
+                    obs_row = self._obs_for_cycle(wm, agent_index)
+
                 cycles.append(int(wm.cycle))
                 if should_save_state:
                     offset = append_world_model(states_path, wm)
                     state_offsets.append({"cycle": int(wm.cycle), "offset": offset})
-                if should_save_obs:
-                    obs_rows.append(self._obs_for_cycle(wm, agent_index))
+                if should_save_obs and obs_row is not None:
+                    obs_rows.append(obs_row)
 
                 self.servicer.discard_trainer_before(cycle)
                 if self._should_log_cycle_progress(cycle):
@@ -173,9 +201,16 @@ class PretrainDatasetCollector:
                         cycle=cycle,
                         cycles=cycles,
                         missing_cycles=missing_cycles,
+                        invalid_projection_cycles=invalid_projection_cycles,
                         started_at=started_at,
                     )
 
+            if should_save_obs and not obs_rows and self.config.time_up > 0:
+                raise RuntimeError(
+                    "No projectable trainer world models collected for obs dataset "
+                    f"run_id={run_id} missing_cycles={len(missing_cycles)} "
+                    f"invalid_projection_cycles={len(invalid_projection_cycles)}"
+                )
             if should_save_obs:
                 write_obs(run_dir / "obs.npy", obs_rows)
                 logger.warning("Wrote obs array run_id=%s path=%s rows=%d", run_id, run_dir / "obs.npy", len(obs_rows))
@@ -196,16 +231,18 @@ class PretrainDatasetCollector:
                 metrics_config=metrics_config.model_dump(mode="json", exclude_none=True),
                 cycles=cycles,
                 missing_cycles=missing_cycles,
+                invalid_projection_cycles=invalid_projection_cycles,
             )
             manifest_path = run_dir / "manifest.json"
             write_json(manifest_path, manifest)
             logger.warning(
                 "Finished pretrain dataset run run_id=%s manifest=%s collected_cycles=%d "
-                "missing_cycles=%d elapsed_s=%.1f",
+                "missing_cycles=%d invalid_projection_cycles=%d elapsed_s=%.1f",
                 run_id,
                 manifest_path,
                 len(cycles),
                 len(missing_cycles),
+                len(invalid_projection_cycles),
                 time.monotonic() - started_at,
             )
             return DatasetRunResult(
@@ -213,6 +250,7 @@ class PretrainDatasetCollector:
                 manifest_path=manifest_path,
                 cycles=cycles,
                 missing_cycles=missing_cycles,
+                invalid_projection_cycles=invalid_projection_cycles,
             )
         finally:
             if room is not None:
@@ -238,19 +276,21 @@ class PretrainDatasetCollector:
         cycle: int,
         cycles: list[int],
         missing_cycles: list[int],
+        invalid_projection_cycles: list[dict[str, object]],
         started_at: float,
     ) -> None:
         elapsed_s = max(time.monotonic() - started_at, 0.001)
         progress_pct = (cycle / self.config.time_up * 100.0) if self.config.time_up else 100.0
         logger.warning(
             "Dataset run progress run_id=%s cycle=%d/%d progress=%.1f%% collected=%d "
-            "missing=%d cycles_per_s=%.2f",
+            "missing=%d invalid_projection=%d cycles_per_s=%.2f",
             run_id,
             cycle,
             self.config.time_up,
             progress_pct,
             len(cycles),
             len(missing_cycles),
+            len(invalid_projection_cycles),
             cycle / elapsed_s,
         )
 
@@ -342,6 +382,25 @@ class PretrainDatasetCollector:
     def _obs_for_cycle(wm: pb2.WorldModel, agent_index: list[AgentIndexEntry]) -> np.ndarray:
         return np.stack([extract_agent_obs(wm, entry) for entry in agent_index]).astype(np.float32, copy=False)
 
+    @staticmethod
+    def _invalid_projection_cycle(
+        wm: pb2.WorldModel,
+        agent_index: list[AgentIndexEntry],
+    ) -> dict[str, object] | None:
+        missing_agents = missing_projectable_agents(wm, agent_index)
+        if not missing_agents:
+            return None
+        return {
+            "cycle": int(wm.cycle),
+            "reason": "missing_agent_in_trainer_world_model",
+            "our_side": int(wm.our_side),
+            "our_team_name": wm.our_team_name,
+            "their_team_name": wm.their_team_name,
+            "our_player_unums": sorted(int(unum) for unum in wm.our_players_dict.keys()),
+            "their_player_unums": sorted(int(unum) for unum in wm.their_players_dict.keys()),
+            "missing_agents": [entry.to_json() for entry in missing_agents],
+        }
+
     def _manifest(
         self,
         *,
@@ -355,6 +414,7 @@ class PretrainDatasetCollector:
         metrics_config: dict[str, object],
         cycles: list[int],
         missing_cycles: list[int],
+        invalid_projection_cycles: list[dict[str, object]],
     ) -> dict[str, object]:
         log_root = metrics_config.get("log_root")
         game_log_rel_dir = metrics_config.get("rcss_game_log_rel_dir")
@@ -399,6 +459,7 @@ class PretrainDatasetCollector:
                 "end": max(cycles) if cycles else None,
                 "count": len(cycles),
                 "missing": missing_cycles,
+                "invalid_projection": invalid_projection_cycles,
             },
         }
 
