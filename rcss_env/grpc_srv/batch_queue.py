@@ -138,6 +138,82 @@ class BatchQueue[StateTy]:
             raise exc
         raise BatchQueueNotRunningError("BatchQueue dispatch task exited unexpectedly")
 
+    async def __dispatch(
+        self,
+        timestep: int,
+        states: dict[int, StateTy],
+        *,
+        partial: bool,
+    ) -> set[int]:
+        """Dispatch one timestep's available states to their per-unum queues."""
+        self.__last_timestep = timestep
+        unums = tuple(states.keys())
+        logger.debug(
+            "BatchQueue.__dispatch: dispatching %s batch for timestep=%d, unums=%s",
+            "partial" if partial else "complete",
+            timestep,
+            sorted(unums),
+        )
+
+        tasks = [
+            asyncio.wait_for(self.__queues[unum].put((timestep, s)), timeout=self.__queue_send_timeout_s)
+            for unum, s in states.items()
+        ]
+
+        res = await asyncio.gather(*tasks, return_exceptions=True)
+        for unum, r in zip(unums, res):
+            if r is not None:
+                logger.error(
+                    "BatchQueue.__dispatch: failed to send %s state for unum=%d at timestep=%d (%s); preserving sync set and raising",
+                    "partial" if partial else "complete",
+                    unum,
+                    timestep,
+                    type(r).__name__,
+                )
+                raise BatchQueueDispatchError(
+                    f"BatchQueue failed to dispatch state for unum={unum} timestep={timestep}: {type(r).__name__}: {r}"
+                )
+        return set(unums)
+
+    async def flush_oldest_pending(self, *, min_unums: int = 1) -> dict[int, StateTy]:
+        """Dispatch the oldest buffered partial timestep.
+
+        This is used by the training loop after a fetch timeout.  If one or
+        more sidecars skipped a cycle, the complete batch can never form
+        because the sidecars that did report are blocked waiting for actions.
+        Flushing the oldest partial batch releases those reporters while the
+        environment can use cached states for missing unums.
+        """
+        self.raise_if_failed()
+        if min_unums <= 0:
+            raise ValueError("min_unums must be positive")
+
+        for timestep in sorted(self.__states.keys()):
+            if timestep <= self.__last_timestep:
+                logger.debug(
+                    "BatchQueue.flush_oldest_pending: discarding stale timestep=%d (last_timestep=%d)",
+                    timestep,
+                    self.__last_timestep,
+                )
+                self.__states.pop(timestep)
+                continue
+
+            states = self.__states.get(timestep, {})
+            if len(states) < min_unums:
+                logger.debug(
+                    "BatchQueue.flush_oldest_pending: timestep=%d has only %d states, min_unums=%d",
+                    timestep,
+                    len(states),
+                    min_unums,
+                )
+                continue
+
+            states = self.__states.pop(timestep)
+            await self.__dispatch(timestep, states, partial=True)
+            return dict(states)
+
+        return {}
+
     async def __run(self):
         """Main dispatch loop: wait for updates or reset, then dispatch complete batches."""
         logger.debug("BatchQueue.__run: dispatch loop started, registered_unums=%s", sorted(self.__unums))
@@ -182,32 +258,8 @@ class BatchQueue[StateTy]:
                         )
                         continue
 
-                    self.__last_timestep = timestep
-                    logger.debug(
-                        "BatchQueue.__run: dispatching complete batch for timestep=%d, unums=%s",
-                        timestep, sorted(arrived_unums),
-                    )
-
                     states: dict[int, StateTy] = self.__states.pop(timestep)
-                    unums = states.keys()
-                    tasks = [
-                        asyncio.wait_for(self.__queues[unum].put((timestep, s)), timeout=self.__queue_send_timeout_s)
-                        for unum, s in states.items()
-                    ]
-
-                    res = await asyncio.gather(*tasks, return_exceptions=True)
-                    for unum, r in zip(unums, res):
-                        if r is not None:
-                            logger.error(
-                                "BatchQueue.__run: failed to send state for unum=%d at timestep=%d (%s); preserving sync set and raising",
-                                unum, timestep,
-                                type(r).__name__,
-                            )
-                            # Do not shrink the sync set during training by unregistering a failing unum here.
-                            # self.unregister(unum)
-                            raise BatchQueueDispatchError(
-                                f"BatchQueue failed to dispatch state for unum={unum} timestep={timestep}: {type(r).__name__}: {r}"
-                            )
+                    await self.__dispatch(timestep, states, partial=False)
                     break
 
         except Exception as e:

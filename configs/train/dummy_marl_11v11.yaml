@@ -36,6 +36,12 @@ curriculum:
   time_up: 5000
   goal_l: 1
   goal_r: 1
+  allow_stale_agent_states: true
+  state_fetch_timeout_s: 5.0
+  reset_state_fetch_timeout_s: 180.0
+  truth_fetch_timeout_s: 30.0
+  partial_state_min_unums: 1
+  max_stale_state_cycles: 20
   our_team_name: nexus-prime
   oppo_team_name: bot
   our_goalie_unum: 1
@@ -46,4 +52,3 @@ curriculum:
 logging:
   enable_aim: false
   aim_repo: /mnt/aim
-

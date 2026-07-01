@@ -70,6 +70,7 @@ def test_collect_match_once_returns_success_payload(
                 manifest_path=manifest_path,
                 cycles=[1, 2, 3],
                 missing_cycles=[4],
+                invalid_projection_cycles=[{"cycle": 5, "reason": "missing_agent_in_trainer_world_model"}],
             )
 
     monkeypatch.setattr("pre_train.gen_datasets.ray_driver.PretrainDatasetCollector", FakeCollector)
@@ -86,6 +87,7 @@ def test_collect_match_once_returns_success_payload(
     assert result["run_id"] == "batch-a-match-000001"
     assert result["cycles"] == 3
     assert result["missing_cycles"] == [4]
+    assert result["invalid_projection_cycles"] == [{"cycle": 5, "reason": "missing_agent_in_trainer_world_model"}]
     assert result["manifest_path"].endswith("/manifest.json")
     assert "Starting dataset match task batch_id=batch-a match_index=1" in caplog.text
     assert "Finished dataset match task batch_id=batch-a match_index=1" in caplog.text

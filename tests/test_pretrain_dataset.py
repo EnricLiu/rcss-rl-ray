@@ -417,3 +417,83 @@ def test_collector_writes_manifest_with_log_root(
     assert "Dataset run progress run_id=run-a cycle=1/2" in caplog.text
     assert "Dataset run progress run_id=run-a cycle=2/2" in caplog.text
     assert "Finished pretrain dataset run run_id=run-a" in caplog.text
+
+
+def test_collector_skips_unprojectable_obs_cycles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeMetricsConfig:
+        def model_dump(self, **_: object) -> dict[str, object]:
+            return {
+                "log_root": "/var/log/rcss",
+                "rcss_game_log_rel_dir": "games",
+            }
+
+    class FakeRoom:
+        def __init__(self) -> None:
+            self.info = SimpleNamespace(
+                name="room-a",
+                host="127.0.0.1",
+                base_url_rcss="http://127.0.0.1:6666",
+                base_url_mc="http://127.0.0.1:7777",
+            )
+            self.rcss = SimpleNamespace(
+                metrics_config=lambda: FakeMetricsConfig(),
+                trainer=SimpleNamespace(start=lambda: None),
+            )
+
+        def release(self) -> None:
+            pass
+
+    class FakeAllocator:
+        def request_room(self, schema: object) -> FakeRoom:
+            return FakeRoom()
+
+    class FakeServicer:
+        def __init__(self) -> None:
+            self.discarded: list[int] = []
+
+        def fetch_trainer_world_model(self, cycle: int, timeout: float) -> pb2.WorldModel:
+            if cycle == 1:
+                return pb2.WorldModel(cycle=cycle, our_side=pb2.LEFT, game_mode_type=pb2.PlayOn)
+            wm = _global_world_model()
+            wm.cycle = cycle
+            return wm
+
+        def discard_trainer_before(self, cycle: int) -> None:
+            self.discarded.append(cycle)
+
+    monkeypatch.setattr("pre_train.gen_datasets.collector.serve", lambda *_args, **_kwargs: (object(), 43123, object()))
+    monkeypatch.setattr(PretrainDatasetCollector, "_advertised_host", lambda self: IPv4Address("127.0.0.1"))
+    monkeypatch.setattr(PretrainDatasetCollector, "_stop_grpc_server", staticmethod(lambda *_args: None))
+
+    config = GenDatasetCurriculumConfig(
+        output_root=tmp_path,
+        dataset_name="pretrain-test",
+        save_mode=SaveMode.OBS,
+        image_pool=[Image(image="HELIOS/helios-base")],
+        time_up=2,
+        progress={"cycle_log_interval": 1, "tqdm": "never"},
+    )
+    servicer = FakeServicer()
+
+    result = PretrainDatasetCollector(
+        config,
+        allocator=FakeAllocator(),
+        servicer=servicer,
+    ).collect_once(run_id="run-a")
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    obs = np.load(result.run_dir / "obs.npy")
+    cycles = np.load(result.run_dir / "cycles.npy")
+
+    assert result.cycles == [2]
+    assert cycles.tolist() == [2]
+    assert obs.shape == (1, 22, 144)
+    assert manifest["cycles"]["count"] == 1
+    assert manifest["cycles"]["invalid_projection"][0]["cycle"] == 1
+    assert manifest["cycles"]["invalid_projection"][0]["reason"] == "missing_agent_in_trainer_world_model"
+    assert len(manifest["cycles"]["invalid_projection"][0]["missing_agents"]) == 22
+    assert result.invalid_projection_cycles == manifest["cycles"]["invalid_projection"]
+    assert servicer.discarded == [1, 2]

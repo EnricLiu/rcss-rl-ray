@@ -392,3 +392,136 @@ def test_calc_reward_uses_coach_truth_instead_of_player_full_world_model(
     assert reward_value == 1.0
     assert reward.calls[0][0].our_team_score == 2
     assert reward.calls[0][1].our_team_score == 3
+
+
+def test_stale_agent_state_cycles_can_progress_with_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    EnvConfig, RCSSEnv, CurriculumMixin = _load_env_types(monkeypatch)
+    schema = _build_schema()
+
+    class StaticCurriculum(CurriculumMixin):
+        config = SimpleNamespace(
+            allow_stale_agent_states=True,
+            max_stale_state_cycles=5,
+        )
+
+        def make_schema(self) -> GameServerSchema:
+            return schema
+
+        def reward_fn(self) -> DummyRewardFn:
+            return DummyRewardFn()
+
+    def fake_setup(self: Any) -> None:
+        self._RCSSEnv__allocator = object()
+        self._RCSSEnv__servicer = FakeServicer()
+
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
+    monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
+
+    env = RCSSEnv(
+        EnvConfig(
+            grpc=ServerConfig(host=IPv4Address("127.0.0.1"), port=50051),
+            allocator=AllocatorConfig(base_url="http://allocator:5555"),
+            curriculum=StaticCurriculum(),
+        )
+    )
+
+    states = {
+        1: pb2.State(world_model=pb2.WorldModel(cycle=10, our_team_score=1)),
+        2: pb2.State(world_model=pb2.WorldModel(cycle=8, our_team_score=1)),
+    }
+
+    env._RCSSEnv__validate_state_cycles(states, allow_partial=True)
+    assert env._RCSSEnv__state_progress_cycle(states) == 10
+
+    setattr(env, "_RCSSEnv__timestep", 10)
+    infos = env._RCSSEnv__collect_infos({
+        unum: state.world_model
+        for unum, state in states.items()
+    })
+
+    assert "stale_state" not in infos[1]
+    assert infos[2]["stale_state"] is True
+    assert infos[2]["stale_cycle_gap"] == 2
+
+    terminateds, _ = env._RCSSEnv__check_done({
+        1: pb2.WorldModel(cycle=8, game_mode_type=pb2.GameModeType.PlayOn),
+        2: pb2.WorldModel(cycle=10, game_mode_type=pb2.TimeOver),
+    })
+    assert terminateds == {1: True, 2: True, "__all__": True}
+
+
+def test_collect_states_uses_partial_fetch_config_for_stale_agent_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    EnvConfig, RCSSEnv, CurriculumMixin = _load_env_types(monkeypatch)
+    schema = _build_schema()
+
+    states = {
+        1: pb2.State(
+            world_model=pb2.WorldModel(
+                cycle=10,
+                game_mode_type=pb2.GameModeType.PlayOn,
+                self=pb2.Self(uniform_number=1),
+            )
+        ),
+        2: pb2.State(
+            world_model=pb2.WorldModel(
+                cycle=9,
+                game_mode_type=pb2.GameModeType.PlayOn,
+                self=pb2.Self(uniform_number=2),
+            )
+        ),
+    }
+
+    class PartialServicer(FakeServicer):
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def fetch_states(self, **kwargs: Any) -> dict[int, pb2.State]:
+            self.calls.append(dict(kwargs))
+            return states
+
+    servicer = PartialServicer()
+
+    class StaticCurriculum(CurriculumMixin):
+        config = SimpleNamespace(
+            allow_stale_agent_states=True,
+            state_fetch_timeout_s=0.25,
+            partial_state_min_unums=1,
+            max_stale_state_cycles=5,
+        )
+
+        def make_schema(self) -> GameServerSchema:
+            return schema
+
+        def reward_fn(self) -> DummyRewardFn:
+            return DummyRewardFn()
+
+    def fake_setup(self: Any) -> None:
+        self._RCSSEnv__allocator = object()
+        self._RCSSEnv__servicer = servicer
+
+    monkeypatch.setattr(Action, "n_actions", classmethod(_n_actions_for_test))
+    monkeypatch.setattr(RCSSEnv, "_setup", fake_setup)
+
+    env = RCSSEnv(
+        EnvConfig(
+            grpc=ServerConfig(host=IPv4Address("127.0.0.1"), port=50051),
+            allocator=AllocatorConfig(base_url="http://allocator:5555"),
+            curriculum=StaticCurriculum(),
+        )
+    )
+
+    collected = env._RCSSEnv__collect_states()
+
+    assert collected is states
+    assert servicer.calls == [
+        {
+            "timeout": 0.25,
+            "allow_partial": True,
+            "require_all": True,
+            "min_partial_states": 1,
+        }
+    ]

@@ -134,6 +134,9 @@ def test_build_train_config_loads_yaml_file_and_cli_overrides() -> None:
     assert cfg.enable_aim is False
     assert cfg.ray_address == "local"
     assert isinstance(env_cfg.curriculum, DummyMarlCurriculum)
+    assert env_cfg.curriculum.config.allow_stale_agent_states is True
+    assert env_cfg.curriculum.config.state_fetch_timeout_s == pytest.approx(5.0)
+    assert env_cfg.curriculum.config.max_stale_state_cycles == 20
     assert [player.unum for player in schema.teams.agent_team.ssp_agents()] == list(range(1, 12))
 
 

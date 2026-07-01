@@ -65,6 +65,7 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_state_cycles: dict[int, int] = {}
         self._last_get_action_meta: dict[int, dict[str, Any]] = {}
         self._last_action_send_meta: dict[int, dict[str, Any]] = {}
+        self._last_fetch_states_meta: dict[str, Any] = {}
         self._last_coach_truth_meta: dict[str, Any] = {}
         self._last_trainer_state_meta: dict[str, Any] = {}
         self._last_need_preprocess: dict[int, bool] = {}
@@ -129,6 +130,7 @@ class GameServicer(pb2_grpc.GameServicer):
                 str(unum): dict(meta)
                 for unum, meta in sorted(self._last_action_send_meta.items())
             },
+            "last_fetch_states": dict(self._last_fetch_states_meta),
             "last_coach_truth": dict(self._last_coach_truth_meta),
             "last_need_preprocess": {
                 str(unum): value
@@ -463,7 +465,56 @@ class GameServicer(pb2_grpc.GameServicer):
     # Async internal helpers
     # ------------------------------------------------------------------
 
-    async def __fetch_states(self, timeout: float) -> dict[int, pb2.State]:
+    def __record_fetched_state(
+        self,
+        unum: int,
+        state: pb2.State,
+    ) -> int:
+        cycle = state.world_model.cycle if state.world_model else -1
+        self._states[unum] = state
+        self._last_state_cycles[unum] = cycle
+        return cycle
+
+    async def __drain_ready_state_queues(
+        self,
+        queue_items: list[tuple[int, asyncio.Queue[tuple[int, pb2.State]]]],
+    ) -> set[int]:
+        updated_unums: set[int] = set()
+        for unum, queue in queue_items:
+            while True:
+                try:
+                    _, state = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                cycle = self.__record_fetched_state(unum, state)
+                updated_unums.add(unum)
+                logger.debug("__fetch_states: drained state unum=%d cycle=%d", unum, cycle)
+        return updated_unums
+
+    def __raise_fetch_states_failure(
+        self,
+        failures: list[tuple[int, Exception]],
+        *,
+        message_prefix: str = "Failed to fetch aligned state",
+    ) -> None:
+        if not failures:
+            raise SyncSetRuntimeError("Failed to fetch states: no recoverable states available")
+
+        failing_unum, failing_exc = failures[0]
+        exc = SyncSetRuntimeError(
+            f"{message_prefix} for unum={failing_unum}: {type(failing_exc).__name__}: {failing_exc}"
+        )
+        self._set_runtime_error(exc)
+        raise exc from failing_exc
+
+    async def __fetch_states(
+        self,
+        timeout: float,
+        *,
+        allow_partial: bool = False,
+        require_all: bool = True,
+        min_partial_states: int = 1,
+    ) -> dict[int, pb2.State]:
         """Await states from all registered unums' output queues."""
         queue_items = list(self._states_queues.items())
         if not queue_items:
@@ -487,30 +538,84 @@ class GameServicer(pb2_grpc.GameServicer):
 
         res = await asyncio.gather(*tasks, return_exceptions=True)
         failures: list[tuple[int, Exception]] = []
+        updated_unums: set[int] = set()
         for (unum, _), item in zip(queue_items, res):
             if isinstance(item, Exception):
-                logger.error(
-                    "__fetch_states: timeout/error waiting for state from unum=%d (%s); preserving sync set and failing. batcher_unums=%s snapshot=%s",
-                    unum, type(item).__name__, sorted(self._batcher.unums()), self.debug_snapshot(),
+                logger.debug(
+                    "__fetch_states: timeout/error waiting for state from unum=%d (%s); allow_partial=%s batcher_unums=%s snapshot=%s",
+                    unum,
+                    type(item).__name__,
+                    allow_partial,
+                    sorted(self._batcher.unums()),
+                    self.debug_snapshot(),
                 )
-                # Preserve the sync set and fail fast instead of silently shrinking it.
-                # self.unregister(unum)
                 failures.append((unum, item))
                 continue
 
             _, state = item
-            cycle = state.world_model.cycle if state.world_model else -1
+            cycle = self.__record_fetched_state(unum, state)
+            updated_unums.add(unum)
             logger.debug("__fetch_states: received state unum=%d cycle=%d", unum, cycle)
-            self._states[unum] = state
-            self._last_state_cycles[unum] = cycle
 
         if failures:
-            failing_unum, failing_exc = failures[0]
-            exc = SyncSetRuntimeError(
-                f"Failed to fetch aligned state for unum={failing_unum}: {type(failing_exc).__name__}: {failing_exc}"
+            if not allow_partial:
+                logger.error(
+                    "__fetch_states: timeout/error while strict-fetching states; preserving sync set and failing. snapshot=%s",
+                    self.debug_snapshot(),
+                )
+                self.__raise_fetch_states_failure(failures)
+
+            try:
+                await self._batcher.flush_oldest_pending(min_unums=min_partial_states)
+            except BatchQueueError as exc:
+                wrapped = SyncSetRuntimeError(
+                    f"Failed to flush partial state batch after fetch timeout: {type(exc).__name__}: {exc}"
+                )
+                self._set_runtime_error(wrapped)
+                logger.error("%s snapshot=%s", wrapped, self.debug_snapshot())
+                raise wrapped from exc
+
+            updated_unums.update(await self.__drain_ready_state_queues(queue_items))
+            cached_unums = set(self._states)
+            expected_unums = {unum for unum, _ in queue_items}
+            missing_uncached = sorted(expected_unums - cached_unums)
+
+            self._last_fetch_states_meta = {
+                "allow_partial": True,
+                "timeout_s": timeout,
+                "updated_unums": sorted(updated_unums),
+                "cached_unums": sorted(cached_unums - updated_unums),
+                "missing_uncached_unums": missing_uncached,
+                "min_partial_states": min_partial_states,
+            }
+
+            if require_all and missing_uncached:
+                self.__raise_fetch_states_failure(
+                    failures,
+                    message_prefix=f"Failed to fetch partial state; missing uncached unums={missing_uncached}",
+                )
+
+            if not updated_unums:
+                self.__raise_fetch_states_failure(
+                    failures,
+                    message_prefix="Failed to fetch partial state; no current-cycle states were available",
+                )
+
+            logger.warning(
+                "__fetch_states: recovered from partial state batch; updated_unums=%s cached_unums=%s snapshot=%s",
+                sorted(updated_unums),
+                sorted(cached_unums - updated_unums),
+                self.debug_snapshot(),
             )
-            self._set_runtime_error(exc)
-            raise exc from failing_exc
+        else:
+            self._last_fetch_states_meta = {
+                "allow_partial": allow_partial,
+                "timeout_s": timeout,
+                "updated_unums": sorted(updated_unums),
+                "cached_unums": [],
+                "missing_uncached_unums": [],
+                "min_partial_states": min_partial_states,
+            }
 
         logger.debug("__fetch_states: done — returning states for unums=%s", sorted(self._states.keys()))
         return self._states.copy()
@@ -522,12 +627,18 @@ class GameServicer(pb2_grpc.GameServicer):
         action_q = self._action_queues.get(unum)
         if action_q is None:
             raise RuntimeError(f"Player unum={unum} not registered")
+        replaced_stale_action = False
         if action_q.full():
-            logger.warning(
-                "__send_action: unum=%d action_queue is FULL (size=%d maxsize=%d) — "
-                "previous action was not consumed; this may block the event loop",
-                unum, action_q.qsize(), action_q.maxsize,
-            )
+            try:
+                action_q.get_nowait()
+                replaced_stale_action = True
+                logger.debug(
+                    "__send_action: unum=%d replaced stale unconsumed action (queue size before put=%d)",
+                    unum,
+                    action_q.qsize(),
+                )
+            except asyncio.QueueEmpty:
+                pass
         try:
             await asyncio.wait_for(action_q.put(action), timeout=ACTION_PUT_TIMEOUT_S)
             self._last_action_send_meta[unum] = {
@@ -535,6 +646,7 @@ class GameServicer(pb2_grpc.GameServicer):
                 "queue_size_after_put": action_q.qsize(),
                 "n_actions": len(action.actions),
                 "last_known_state_cycle": self._last_state_cycles.get(unum),
+                "replaced_stale_action": replaced_stale_action,
             }
             logger.debug("__send_action: unum=%d action enqueued", unum)
         except asyncio.TimeoutError:
@@ -656,11 +768,21 @@ class GameServicer(pb2_grpc.GameServicer):
         return result
 
     def fetch_states(
-        self, timeout: float = STATE_GET_TIMEOUT_S
+        self,
+        timeout: float = STATE_GET_TIMEOUT_S,
+        *,
+        allow_partial: bool = False,
+        require_all: bool = True,
+        min_partial_states: int = 1,
     ) -> dict[int, pb2.State]:
         """Block until states from all registered unums are available and return them."""
         return self.__run_coro(
-            self.__fetch_states(timeout=timeout),
+            self.__fetch_states(
+                timeout=timeout,
+                allow_partial=allow_partial,
+                require_all=require_all,
+                min_partial_states=min_partial_states,
+            ),
             timeout=timeout+0.5,
         )
 
@@ -733,6 +855,7 @@ class GameServicer(pb2_grpc.GameServicer):
         self._last_state_cycles.clear()
         self._last_get_action_meta.clear()
         self._last_action_send_meta.clear()
+        self._last_fetch_states_meta.clear()
         self._last_coach_truth_meta.clear()
         self._last_trainer_state_meta.clear()
         self._last_need_preprocess.clear()
@@ -767,6 +890,7 @@ class GameServicer(pb2_grpc.GameServicer):
             self._last_state_cycles.clear()
             self._last_get_action_meta.clear()
             self._last_action_send_meta.clear()
+            self._last_fetch_states_meta.clear()
             self._last_coach_truth_meta.clear()
             self._last_trainer_state_meta.clear()
             self._last_need_preprocess.clear()

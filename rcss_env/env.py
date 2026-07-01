@@ -256,7 +256,10 @@ class RCSSEnv(MultiAgentEnv):
             self.room.rcss.trainer.start()
             logger.debug("Requested room %s from allocator and started simulation", self.room.info.name)
             # 5. Wait for all agent sidecars to send their initial states
-            states = self.__collect_states()
+            states = self.__collect_states(
+                timeout_s=self.__reset_state_fetch_timeout_s(),
+                allow_partial=False,
+            )
             truth = self.__collect_truth_world_model(self.__aligned_state_cycle(states))
             self.__heartbeat_room(force=True)
             logger.debug(
@@ -308,7 +311,7 @@ class RCSSEnv(MultiAgentEnv):
         curr_states = self.__collect_states()
         self.__curr_states = curr_states
 
-        curr_cycle = self.__aligned_state_cycle(curr_states)
+        curr_cycle = self.__state_progress_cycle(curr_states)
         curr_truth = self.__collect_truth_world_model(curr_cycle)
         self.__curr_truth_world_model = curr_truth
 
@@ -479,22 +482,64 @@ class RCSSEnv(MultiAgentEnv):
         """Return the previous coach truth WorldModel."""
         return self.__prev_truth_world_model
 
-    def __collect_states(self, timeout_s: float = 180.0) -> dict[int, pb2.State]:
+    def __curriculum_runtime_value(self, name: str, default: Any) -> Any:
+        cfg = getattr(self.curriculum, "config", None)
+        return getattr(cfg, name, default)
+
+    def __allow_stale_agent_states(self) -> bool:
+        return bool(self.__curriculum_runtime_value("allow_stale_agent_states", False))
+
+    def __state_fetch_timeout_s(self) -> float:
+        return max(0.001, float(self.__curriculum_runtime_value("state_fetch_timeout_s", 180.0)))
+
+    def __reset_state_fetch_timeout_s(self) -> float:
+        return max(0.001, float(self.__curriculum_runtime_value("reset_state_fetch_timeout_s", 180.0)))
+
+    def __truth_fetch_timeout_s(self) -> float:
+        return max(0.001, float(self.__curriculum_runtime_value("truth_fetch_timeout_s", 180.0)))
+
+    def __partial_state_min_unums(self) -> int:
+        return max(1, int(self.__curriculum_runtime_value("partial_state_min_unums", 1)))
+
+    def __max_stale_state_cycles(self) -> int | None:
+        value = self.__curriculum_runtime_value("max_stale_state_cycles", None)
+        if value is None:
+            return None
+        return max(0, int(value))
+
+    def __collect_states(
+        self,
+        timeout_s: float | None = None,
+        *,
+        allow_partial: bool | None = None,
+    ) -> dict[int, pb2.State]:
         """
-        Block until all registered agents have sent their State.
-        Returns when States are aligned and GameModeType is PlayOn.
+        Block until registered agents have sent states.
+
+        In strict mode, all states must be aligned to one cycle.  In partial
+        mode, current-cycle states may be combined with cached states for
+        agents that skipped the cycle.
         """
+        timeout = self.__state_fetch_timeout_s() if timeout_s is None else timeout_s
+        allow_partial_states = self.__allow_stale_agent_states() if allow_partial is None else allow_partial
         try:
             while True:
-                states = self.__get_servicer().fetch_states(timeout=timeout_s)
+                states = self.__get_servicer().fetch_states(
+                    timeout=timeout,
+                    allow_partial=allow_partial_states,
+                    require_all=True,
+                    min_partial_states=self.__partial_state_min_unums(),
+                )
                 if len(missing := self.agent_team_unums.difference(states.keys())) != 0:
                     raise ValueError(f"Missing states for unums: {sorted(missing)}")
 
-                keys = list(states.keys())
-                if len(keys) == 0:
+                self.__validate_state_cycles(states, allow_partial=allow_partial_states)
+
+                wm = self.__freshest_world_model(states)
+                if wm is None:
                     raise RuntimeError(f"No states returned by __collect_states!")
 
-                if (wm := states[keys[0]].world_model).game_mode_type != pb2.GameModeType.PlayOn:
+                if wm.game_mode_type != pb2.GameModeType.PlayOn:
                     logger.debug(
                         "[__collect_states@ts=%d] GameMode=%s. Sending Idle Actions.",
                         wm.cycle,
@@ -517,11 +562,12 @@ class RCSSEnv(MultiAgentEnv):
     def __collect_truth_world_model(
         self,
         cycle: int,
-        timeout_s: float = 180.0,
+        timeout_s: float | None = None,
     ) -> pb2.WorldModel:
         """Fetch the exact-cycle coach truth WorldModel used for reward computation."""
+        timeout = self.__truth_fetch_timeout_s() if timeout_s is None else timeout_s
         try:
-            truth = self.__get_servicer().fetch_truth_world_model(cycle, timeout=timeout_s)
+            truth = self.__get_servicer().fetch_truth_world_model(cycle, timeout=timeout)
             if truth.cycle != cycle:
                 raise ValueError(
                     f"Fetched coach truth cycle={truth.cycle}, expected cycle={cycle}"
@@ -619,6 +665,16 @@ class RCSSEnv(MultiAgentEnv):
     def __truth_cycle(world_model: pb2.WorldModel | None) -> int | None:
         return None if world_model is None else int(world_model.cycle)
 
+    @staticmethod
+    def __freshest_world_model(states: dict[int, pb2.State]) -> pb2.WorldModel | None:
+        freshest: pb2.WorldModel | None = None
+        for state in states.values():
+            if state is None or state.world_model is None:
+                continue
+            if freshest is None or state.world_model.cycle > freshest.cycle:
+                freshest = state.world_model
+        return freshest
+
     def __aligned_state_cycle(self, states: dict[int, pb2.State]) -> int:
         cycles_by_unum = self.__state_cycles(states)
         if len(cycles_by_unum) != len(states):
@@ -628,6 +684,44 @@ class RCSSEnv(MultiAgentEnv):
         if len(cycles) != 1:
             raise ValueError(f"Expected exactly one aligned state cycle, got {sorted(cycles)}")
         return next(iter(cycles))
+
+    def __state_progress_cycle(self, states: dict[int, pb2.State]) -> int:
+        if not self.__allow_stale_agent_states():
+            return self.__aligned_state_cycle(states)
+
+        cycles_by_unum = self.__state_cycles(states)
+        if len(cycles_by_unum) != len(states):
+            missing = sorted(set(states) - set(cycles_by_unum))
+            raise ValueError(f"Missing world_model cycle for unums: {missing}")
+        if not cycles_by_unum:
+            raise ValueError("No state cycles available")
+        return max(cycles_by_unum.values())
+
+    def __validate_state_cycles(
+        self,
+        states: dict[int, pb2.State],
+        *,
+        allow_partial: bool,
+    ) -> None:
+        if not allow_partial:
+            self.__aligned_state_cycle(states)
+            return
+
+        current_cycle = self.__state_progress_cycle(states)
+        max_stale = self.__max_stale_state_cycles()
+        if max_stale is None:
+            return
+
+        cycles_by_unum = self.__state_cycles(states)
+        too_stale = {
+            unum: current_cycle - cycle
+            for unum, cycle in cycles_by_unum.items()
+            if current_cycle - cycle > max_stale
+        }
+        if too_stale:
+            raise ValueError(
+                f"Stale state cycle gap exceeded max_stale_state_cycles={max_stale}: {too_stale}"
+            )
 
     def __validate_action_mask(self, unum: int, action_dict: dict[str, Any]) -> None:
         discrete_action = int(action_dict["actions"])
@@ -738,7 +832,11 @@ class RCSSEnv(MultiAgentEnv):
         terminated: game mode is TimeOver.
         truncated:  step count has reached StoppingEvents.time_up.
         """
-        wm = next((w for w in curr_wms.values() if w is not None), None)
+        wm = max(
+            (w for w in curr_wms.values() if w is not None),
+            key=lambda w: w.cycle,
+            default=None,
+        )
 
         game_over = wm is not None and wm.game_mode_type == pb2.TimeOver
         time_up = self.schema.stopping.time_up
@@ -769,6 +867,9 @@ class RCSSEnv(MultiAgentEnv):
                     "step": self.__timestep,
                     "cycle": wm.cycle,
                 }
+                if wm.cycle < self.__timestep:
+                    infos[unum]["stale_state"] = True
+                    infos[unum]["stale_cycle_gap"] = self.__timestep - wm.cycle
             else:
                 infos[unum] = {"step": self.__timestep}
 

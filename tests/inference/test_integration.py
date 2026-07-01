@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
 from inference.config import InferenceConfig
 from inference.exporter import export_bundle
@@ -126,6 +127,12 @@ runtime:
 curriculum:
   type: dummy_marl
   team_side: left
+  allow_stale_agent_states: true
+  state_fetch_timeout_s: 5.0
+  reset_state_fetch_timeout_s: 180.0
+  truth_fetch_timeout_s: 30.0
+  partial_state_min_unums: 1
+  max_stale_state_cycles: 20
 logging:
   enable_aim: false
 """.strip(),
@@ -165,4 +172,8 @@ logging:
     episode = summary.episodes[0]
     assert set(episode.rewards) == set(range(1, 12))
     assert set(episode.action_counts) == set(range(1, 12))
+    exported_experiment = yaml.safe_load((bundle / "experiment.yaml").read_text(encoding="utf-8"))
+    assert exported_experiment["curriculum"]["type"] == "dummy_marl"
+    assert exported_experiment["curriculum"]["allow_stale_agent_states"] is True
+    assert exported_experiment["curriculum"]["max_stale_state_cycles"] == 20
     assert created[0].closed is True

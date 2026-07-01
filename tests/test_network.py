@@ -32,6 +32,20 @@ def _register_response(
 	)
 
 
+def _state(uniform_number: int, cycle: int) -> pb2.State:
+	return pb2.State(
+		register_response=_register_response(
+			uniform_number=uniform_number,
+			client_id=uniform_number,
+		),
+		world_model=pb2.WorldModel(
+			cycle=cycle,
+			game_mode_type=pb2.GameModeType.PlayOn,
+			self=pb2.Self(uniform_number=uniform_number),
+		),
+	)
+
+
 def test_batch_queue_reset_clears_state_and_allows_restart() -> None:
 	async def scenario() -> None:
 		batcher: BatchQueue[int] = BatchQueue()
@@ -58,6 +72,29 @@ def test_batch_queue_reset_clears_state_and_allows_restart() -> None:
 	asyncio.run(scenario())
 
 
+def test_batch_queue_flush_oldest_pending_dispatches_partial_batch() -> None:
+	async def scenario() -> None:
+		batcher: BatchQueue[int] = BatchQueue()
+		first_queue: asyncio.Queue[tuple[int, int]] = asyncio.Queue(maxsize=1)
+		second_queue: asyncio.Queue[tuple[int, int]] = asyncio.Queue(maxsize=1)
+
+		batcher.register(1, first_queue)
+		batcher.register(2, second_queue)
+		batcher.run()
+
+		await batcher.put(1, 3, 7)
+		flushed = await batcher.flush_oldest_pending()
+
+		assert flushed == {1: 7}
+		assert await asyncio.wait_for(first_queue.get(), timeout=0.5) == (3, 7)
+		assert second_queue.empty()
+		assert batcher.unums() == frozenset({1, 2})
+
+		await batcher.reset()
+
+	asyncio.run(scenario())
+
+
 def test_batch_queue_dispatch_failure_preserves_registered_unums() -> None:
 	async def scenario() -> None:
 		batcher: BatchQueue[int] = BatchQueue(queue_send_timeout_s=0.01)
@@ -75,6 +112,55 @@ def test_batch_queue_dispatch_failure_preserves_registered_unums() -> None:
 			batcher.raise_if_failed()
 
 		await batcher.reset()
+
+	asyncio.run(scenario())
+
+
+def test_game_servicer_partial_fetch_uses_cached_state_without_shrinking_sync_set() -> None:
+	async def scenario() -> None:
+		servicer = GameServicer()
+		servicer.register(1)
+		servicer.register(2)
+		await servicer._GameServicer__reset_runtime()
+
+		servicer._states[2] = _state(2, 4)
+		await servicer._batcher.put(1, 5, _state(1, 5))
+
+		states = await servicer._GameServicer__fetch_states(
+			timeout=0.01,
+			allow_partial=True,
+		)
+
+		assert states[1].world_model.cycle == 5
+		assert states[2].world_model.cycle == 4
+		assert servicer.unums == frozenset({1, 2})
+		snapshot = servicer.debug_snapshot()
+		assert snapshot["runtime_error"] is None
+		assert snapshot["last_fetch_states"]["updated_unums"] == [1]
+		assert snapshot["last_fetch_states"]["cached_unums"] == [2]
+
+		await servicer._batcher.reset()
+
+	asyncio.run(scenario())
+
+
+def test_game_servicer_send_action_replaces_stale_unconsumed_action() -> None:
+	async def scenario() -> None:
+		servicer = GameServicer()
+		servicer.register(1)
+		await servicer._GameServicer__reset_runtime()
+
+		await servicer._GameServicer__send_action(1, pb2.PlayerActions())
+		await servicer._GameServicer__send_action(
+			1,
+			pb2.PlayerActions(actions=[pb2.PlayerAction()]),
+		)
+
+		action = await asyncio.wait_for(servicer._action_queues[1].get(), timeout=0.5)
+		assert len(action.actions) == 1
+		assert servicer.debug_snapshot()["last_action_send"]["1"]["replaced_stale_action"] is True
+
+		await servicer._batcher.reset()
 
 	asyncio.run(scenario())
 
@@ -201,4 +287,3 @@ def test_game_servicer_buffers_coach_truth_by_exact_cycle() -> None:
 		await servicer._truth_buffer.reset()
 
 	asyncio.run(scenario())
-
